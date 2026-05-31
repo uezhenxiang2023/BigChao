@@ -1,5 +1,9 @@
+# Weixin QR Login
+qrcode
+
 # Feishu webhook runtime
 flask
+
 # win系统，用waitress取代gunicorn
 gunicorn
 gevent

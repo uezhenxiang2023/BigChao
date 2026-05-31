@@ -39,6 +39,7 @@ class ChatChannel(Channel):
     _consumer_pid = None
 
     def __init__(self):
+        super().__init__()
         self.ensure_consumer_thread()
 
     def ensure_consumer_thread(self):

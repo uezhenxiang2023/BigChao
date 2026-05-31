@@ -10,10 +10,7 @@ def create_channel(channel_type) -> Channel:
     :return: channel instance
     """
     ch = Channel()
-    if channel_type == "wx":
-        from channel.wechat.wechat_channel import WechatChannel
-        ch = WechatChannel()
-    elif channel_type == "wxy":
+    if channel_type == "wxy":
         from channel.wechat.wechaty_channel import WechatyChannel
         ch = WechatyChannel()
     elif channel_type == "terminal":
@@ -43,6 +40,10 @@ def create_channel(channel_type) -> Channel:
     elif channel_type == const.TELEGRAM:
         from channel.telegram.telegram_channel import TelegramChannel
         ch = TelegramChannel()
+    elif channel_type in (const.WEIXIN, "wx"):
+        from channel.weixin.weixin_channel import WeixinChannel
+        ch = WeixinChannel()
+        channel_type = const.WEIXIN
     else:
         raise RuntimeError
     ch.channel_type = channel_type

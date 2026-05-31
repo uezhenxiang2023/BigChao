@@ -18,6 +18,7 @@ SUPPORTED_PLUGIN_CHANNELS = [
     "wechatmp_service",
     "wechatcom_app",
     "wework",
+    const.WEIXIN,
     const.FEISHU,
     const.DINGTALK,
     const.TELEGRAM,

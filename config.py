@@ -137,6 +137,11 @@ available_setting = {
     "hot_reload": False,  # 是否开启热重载
     # wechaty的配置
     "wechaty_puppet_service_token": "",  # wechaty的token
+    # WeChat config
+    "weixin_token": "",  # bot_token obtained after WeChat login; leave empty to auto scan-login on startup
+    "weixin_base_url": "https://ilinkai.weixin.qq.com",  # Weixin ilink API base URL
+    "weixin_cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",  # CDN base URL
+    "weixin_credentials_path": "~/.weixin_cow_credentials.json",  # credentials file path
     # wechatmp的配置
     "wechatmp_token": "",  # 微信公众平台的Token
     "wechatmp_port": 8080,  # 微信公众平台的端口,需要端口转发到80或443

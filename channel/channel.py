@@ -9,12 +9,43 @@ from bridge.reply import *
 
 class Channel(object):
     NOT_SUPPORT_REPLYTYPE = [ReplyType.VOICE]
+    def __init__(self):
+        import threading
+        self._startup_event = threading.Event()
+        self._startup_error = None
+        self.cloud_mode = False  # set to True by ChannelManager when running with cloud client
 
     def startup(self):
         """
         init channel
         """
         raise NotImplementedError
+    
+    def report_startup_success(self):
+        self._startup_error = None
+        self._startup_event.set()
+
+    def report_startup_error(self, error: str):
+        self._startup_error = error
+        self._startup_event.set()
+
+    def wait_startup(self, timeout: float = 3) -> tuple[bool, str]:
+        """
+        Wait for channel startup result.
+        Returns (success: bool, error_msg: str).
+        """
+        ready = self._startup_event.wait(timeout=timeout)
+        if not ready:
+            return True, ""
+        if self._startup_error:
+            return False, self._startup_error
+        return True, ""
+
+    def stop(self):
+        """
+        stop channel gracefully, called before restart
+        """
+        pass
 
     def handle_text(self, msg):
         """
