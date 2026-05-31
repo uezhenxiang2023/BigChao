@@ -90,7 +90,8 @@ GEMINI_25_PRO_LIST = [GEMINI_25_PRO_PREVRIEW, GEMINI_25_PRO, GEMINI_25_FLASH_PRE
 GEMINI_3_FLASH_PREVIEW = "gemini-3-flash-preview"
 GEMINI_31_FLASH_LITE = "gemini-3.1-flash-lite"
 GEMINI_31_PRO_PREVIEW = "gemini-3.1-pro-preview"
-GEMINI_PAID = [GEMINI_25_PRO, GEMINI_31_PRO_PREVIEW]
+GEMINI_35_FLASH= "gemini-3.5-flash"
+GEMINI_PAID = [GEMINI_25_PRO, GEMINI_31_PRO_PREVIEW, GEMINI_35_FLASH]
 
 # Google_Gemini_image
 IMAGEN_4 = "imagen-4.0-generate-001"
@@ -98,16 +99,16 @@ IMAGEN_4_ULTRA = "imagen-4.0-ultra-generate-001"
 IMAGEN_4_FAST = "imagen-4.0-fast-generate-001"
 GEMINI_2_FLASH_IMAGE_GENERATION = 'gemini-2.0-flash-preview-image-generation'
 GEMINI_25_FLASH_IMAGE = "gemini-2.5-flash-image"
-GEMINI_3_PRO_IMAGE_PREVIEW = "gemini-3-pro-image-preview"
-GEMINI_31_FLASH_IMAGE_PREVIEW = "gemini-3.1-flash-image-preview"
+GEMINI_3_PRO_IMAGE = "gemini-3-pro-image"
+GEMINI_31_FLASH_IMAGE = "gemini-3.1-flash-image"
 GOOGLE_IMAGE_LIST = [
     IMAGEN_4, 
     IMAGEN_4_ULTRA, 
     IMAGEN_4_FAST, 
     GEMINI_2_FLASH_IMAGE_GENERATION, 
     GEMINI_25_FLASH_IMAGE, 
-    GEMINI_3_PRO_IMAGE_PREVIEW, 
-    GEMINI_31_FLASH_IMAGE_PREVIEW
+    GEMINI_3_PRO_IMAGE, 
+    GEMINI_31_FLASH_IMAGE
 ]
 
 
