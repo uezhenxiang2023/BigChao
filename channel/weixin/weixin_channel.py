@@ -430,7 +430,7 @@ class WeixinChannel(ChatChannel):
                 msgs = resp.get("msgs", [])
                 for raw_msg in msgs:
                     try:
-                        self._process_message(raw_msg)
+                        self.handler_single_msg(raw_msg)
                     except Exception as e:
                         logger.error(f"[Weixin] Failed to process message: {e}", exc_info=True)
 
@@ -447,55 +447,97 @@ class WeixinChannel(ChatChannel):
                     self._stop_event.wait(RETRY_DELAY)
 
         logger.info("[Weixin] Long-poll loop ended")
-
-    def _process_message(self, raw_msg: dict):
-        """Parse a single inbound message and produce to the handling queue."""
+    
+    def handler_single_msg(self, raw_msg: dict):
+        """从 long-poll 原始消息体组装 WeixinMessage，再交给 handle_single 处理。"""
         msg_type = raw_msg.get("message_type", 0)
         if msg_type != 1:  # Only process USER messages (type=1)
             return
-
+ 
         msg_id = str(raw_msg.get("message_id", raw_msg.get("seq", "")))
         if self._received_msgs.get(msg_id):
             return
         self._received_msgs[msg_id] = True
-
+ 
         from_user = raw_msg.get("from_user_id", "")
         context_token = raw_msg.get("context_token", "")
-
         if context_token and from_user:
             self._update_context_token(from_user, context_token)
-
+ 
         cdn_base_url = self.api.cdn_base_url if self.api else CDN_BASE_URL
         try:
             wx_msg = WeixinMessage(raw_msg, cdn_base_url=cdn_base_url)
         except Exception as e:
             logger.error(f"[Weixin] Failed to parse WeixinMessage: {e}", exc_info=True)
             return
+ 
+        self.handle_single(wx_msg)
 
-        logger.info(f"[Weixin] Received: from={from_user} ctype={wx_msg.ctype} "
-                     f"content={str(wx_msg.content)[:50]}")
-
+    def handle_single(self, cmsg: WeixinMessage):
+        """处理单条已解析的 WeixinMessage：打日志、注入 quoted media、produce。"""
+        # 按 ctype 分类打日志
+        if cmsg.ctype == ContextType.VOICE:
+            logger.debug(f"[Weixin] receive voice msg: {cmsg.content}")
+        elif cmsg.ctype == ContextType.IMAGE:
+            logger.debug(f"[Weixin] receive image msg: {cmsg.content}")
+        elif cmsg.ctype == ContextType.VIDEO:
+            logger.debug(f"[Weixin] receive video msg: {cmsg.content}")
+        elif cmsg.ctype == ContextType.FILE:
+            logger.debug(f"[Weixin] receive file msg: {cmsg.content}")
+        elif cmsg.ctype == ContextType.TEXT:
+            logger.debug(f"[Weixin] receive text msg: {cmsg.content}, cmsg={cmsg}")
+        else:
+            logger.debug(f"[Weixin] receive msg: {cmsg.content}, cmsg={cmsg}")
+ 
+        logger.info(f"[Weixin] Received: from={cmsg.from_user_id} ctype={cmsg.ctype} "
+                    f"content={str(cmsg.content)[:50]}")
+ 
         context = self._compose_context(
-            wx_msg.ctype,
-            wx_msg.content,
+            cmsg.ctype,
+            cmsg.content,
             isgroup=False,
-            msg=wx_msg,
+            msg=cmsg,
             no_need_at=True,
         )
-        if context and wx_msg.ctype == ContextType.VIDEO:
-            wx_msg.prepare()
-            public_url = build_public_media_url(wx_msg.content)
+        if context is None:
+            return
+ 
+        # 注入 quoted media
+        if hasattr(cmsg, "get_quoted_image_path"):
+            quoted_image_path = cmsg.get_quoted_image_path()
+            if quoted_image_path:
+                context["quoted_image_path"] = quoted_image_path
+ 
+        if hasattr(cmsg, "get_quoted_video_path"):
+            quoted_video_path = cmsg.get_quoted_video_path()
+            if quoted_video_path:
+                context["quoted_video_path"] = quoted_video_path
+                quoted_video_public_url = build_public_media_url(quoted_video_path)
+                if quoted_video_public_url:
+                    context["quoted_video_public_url"] = quoted_video_public_url
+ 
+        if hasattr(cmsg, "get_quoted_file_path"):
+            quoted_file_path = cmsg.get_quoted_file_path()
+            if quoted_file_path:
+                context["quoted_file_path"] = quoted_file_path
+ 
+        # VIDEO 消息本体公网 URL
+        if cmsg.ctype == ContextType.VIDEO:
+            cmsg.prepare()
+            public_url = build_public_media_url(cmsg.content)
             if public_url:
                 context["video_public_url"] = public_url
-        if context and wx_msg.ctype == ContextType.FILE:
-            suffix = os.path.splitext(wx_msg.content)[1].lstrip(".").lower()
+ 
+        # FILE 消息如果是视频文件，也补充公网 URL
+        if cmsg.ctype == ContextType.FILE:
+            suffix = os.path.splitext(cmsg.content)[1].lstrip(".").lower()
             if suffix in const.VIDEO:
-                wx_msg.prepare()
-                public_url = build_public_media_url(wx_msg.content)
+                cmsg.prepare()
+                public_url = build_public_media_url(cmsg.content)
                 if public_url:
                     context["video_public_url"] = public_url
-        if context:
-            self.produce(context)
+ 
+        self.produce(context)
 
     # ── _compose_context ───────────────────────────────────────────────
 

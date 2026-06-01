@@ -47,6 +47,12 @@ class WeixinMessage(ChatMessage):
         self.actual_user_id = from_user_id
         self.actual_user_nickname = from_user_id
         self.user_dir = get_request_dir("weixin", from_user_id)
+        self._cdn_base_url = cdn_base_url
+
+        # 保存引用媒体的原始 item，供 get_quoted_* 方法按需下载
+        self._quoted_media_item = None   # ref_msg.message_item（图片/视频/文件）
+        self._quoted_media_type = None   # ITEM_IMAGE / ITEM_VIDEO / ITEM_FILE
+        self._quoted_file_name = None    # 文件名（仅 ITEM_FILE 时有值）
 
         item_list = msg.get("item_list", [])
 
@@ -73,10 +79,13 @@ class WeixinMessage(ChatMessage):
                     if ref_title or ref_body:
                         parts = [p for p in [ref_title, ref_body] if p]
                         ref_text = f"[引用: {' | '.join(parts)}]\n"
-                    # If ref is a media item, treat it as the media to download
-                    if ref_mi.get("type") in (ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE):
-                        media_item = ref_mi
-                        media_type = ref_mi.get("type")
+                    # 引用媒体：记录下来供 get_quoted_* 按需下载
+                    ref_mi_type = ref_mi.get("type")
+                    if ref_mi_type in (ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE):
+                        self._quoted_media_item = ref_mi
+                        self._quoted_media_type = ref_mi_type
+                        if ref_mi_type == ITEM_FILE:
+                            self._quoted_file_name = ref_mi.get("file_item", {}).get("file_name")
 
             elif itype == ITEM_VOICE:
                 voice_item = item.get("voice_item", {})
@@ -196,3 +205,41 @@ class WeixinMessage(ChatMessage):
         except Exception as e:
             logger.error(f"[Weixin] Media download failed: {e}")
             return ""
+
+    # ── Quoted media helpers（对齐飞书/Telegram 通道）─────────────────
+
+    def get_quoted_image_path(self) -> str | None:
+        """返回引用图片的本地路径，没有则返回 None。"""
+        if self._quoted_media_type != ITEM_IMAGE or not self._quoted_media_item:
+            return None
+        os.makedirs(self.user_dir, exist_ok=True)
+        save_path = os.path.join(self.user_dir, f"quoted_{self.msg_id}.jpg")
+        path = self._download_media(self._quoted_media_item, ITEM_IMAGE, self._cdn_base_url)
+        if path:
+            logger.info(f"[Weixin] Quoted image downloaded: {path}")
+        return path or None
+
+    def get_quoted_video_path(self) -> str | None:
+        """返回引用视频的本地路径，没有则返回 None。"""
+        if self._quoted_media_type != ITEM_VIDEO or not self._quoted_media_item:
+            return None
+        os.makedirs(self.user_dir, exist_ok=True)
+        path = self._download_media(self._quoted_media_item, ITEM_VIDEO, self._cdn_base_url)
+        if path:
+            logger.info(f"[Weixin] Quoted video downloaded: {path}")
+        return path or None
+
+    def get_quoted_file_path(self) -> str | None:
+        """返回引用文件的本地路径（仅 pdf/doc/docx/txt），没有则返回 None。"""
+        if self._quoted_media_type != ITEM_FILE or not self._quoted_media_item:
+            return None
+        file_name = self._quoted_file_name or ""
+        suffix = os.path.splitext(file_name)[1].lstrip(".").lower()
+        if suffix not in {"pdf", "doc", "docx", "txt", "plain"}:
+            logger.info(f"[Weixin] skip quoted file, unsupported suffix={suffix}")
+            return None
+        os.makedirs(self.user_dir, exist_ok=True)
+        path = self._download_media(self._quoted_media_item, ITEM_FILE, self._cdn_base_url)
+        if path:
+            logger.info(f"[Weixin] Quoted file downloaded: {path}")
+        return path or None
