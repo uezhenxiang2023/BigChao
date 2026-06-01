@@ -335,6 +335,8 @@ class ChatChannel(Channel):
             elif context.type == ContextType.TEXT:
                 # 文字消息
                 with cache_lock: # 等待图片缓存完成后再处理文本
+                    if getattr(context.get("msg"), "_prepare_fn", None):
+                        context["msg"].prepare()
                     self._cache_quoted_image(context)
                     self._cache_quoted_file(context)
                     context["channel"] = e_context["channel"]
@@ -354,7 +356,7 @@ class ChatChannel(Channel):
                     else model_state.get_image_model(session_id) if is_imaging
                     else model_state.get_basic_state(session_id)
                 )
-                logger.info(f'[{model.upper()}] query with file, path={image_path}')
+                logger.info(f'[{model.upper()}] query with image, path={image_path}')
                 mime_type = image_path[(image_path.rfind('.') + 1):]
                 type_id = 'image'
                 channel_type = conf().get("channel_type")
