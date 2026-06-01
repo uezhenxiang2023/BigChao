@@ -32,7 +32,7 @@ class TelegramChannel(ChatChannel):
         'Seedream': const.DOUBAO_SEEDREAM_5,
         'KlingImage': const.KLING_V3_OMNI,
         'GPTImage': const.GPT_IMAGE_2,
-        'NanoBanana': const.GEMINI_31_FLASH_IMAGE_PREVIEW,
+        'NanoBanana': const.GEMINI_31_FLASH_IMAGE,
         'GrokImage': const.GROK_IMAGINE_IMAGE_QUALITY,
         'LumaImage': const.UNI_1,
         'Seedance': const.DOUBAO_SEEDANCE_20,
