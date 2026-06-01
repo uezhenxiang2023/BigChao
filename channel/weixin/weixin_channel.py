@@ -21,8 +21,10 @@ from channel.weixin.weixin_api import (
     DEFAULT_BASE_URL, CDN_BASE_URL,
 )
 from channel.weixin.weixin_message import WeixinMessage
+from common import const
 from common.expired_dict import ExpiredDict
 from common.log import logger
+from common.media_store import build_public_media_url
 from common.singleton import singleton
 from config import conf
 
@@ -473,38 +475,6 @@ class WeixinChannel(ChatChannel):
         logger.info(f"[Weixin] Received: from={from_user} ctype={wx_msg.ctype} "
                      f"content={str(wx_msg.content)[:50]}")
 
-        # File cache logic
-        from channel.file_cache import get_file_cache
-        file_cache = get_file_cache()
-        session_id = from_user
-
-        if wx_msg.ctype == ContextType.IMAGE:
-            if hasattr(wx_msg, "image_path") and wx_msg.image_path:
-                file_cache.add(session_id, wx_msg.image_path, file_type="image")
-                logger.info(f"[Weixin] Image cached for session {session_id}")
-            return
-
-        if wx_msg.ctype == ContextType.FILE:
-            wx_msg.prepare()
-            file_cache.add(session_id, wx_msg.content, file_type="file")
-            logger.info(f"[Weixin] File cached for session {session_id}: {wx_msg.content}")
-            return
-
-        if wx_msg.ctype == ContextType.TEXT:
-            cached_files = file_cache.get(session_id)
-            if cached_files:
-                refs = []
-                for fi in cached_files:
-                    ftype, fpath = fi["type"], fi["path"]
-                    if ftype == "image":
-                        refs.append(f"[图片: {fpath}]")
-                    elif ftype == "video":
-                        refs.append(f"[视频: {fpath}]")
-                    else:
-                        refs.append(f"[文件: {fpath}]")
-                wx_msg.content = wx_msg.content + "\n" + "\n".join(refs)
-                file_cache.clear(session_id)
-
         context = self._compose_context(
             wx_msg.ctype,
             wx_msg.content,
@@ -512,6 +482,18 @@ class WeixinChannel(ChatChannel):
             msg=wx_msg,
             no_need_at=True,
         )
+        if context and wx_msg.ctype == ContextType.VIDEO:
+            wx_msg.prepare()
+            public_url = build_public_media_url(wx_msg.content)
+            if public_url:
+                context["video_public_url"] = public_url
+        if context and wx_msg.ctype == ContextType.FILE:
+            suffix = os.path.splitext(wx_msg.content)[1].lstrip(".").lower()
+            if suffix in const.VIDEO:
+                wx_msg.prepare()
+                public_url = build_public_media_url(wx_msg.content)
+                if public_url:
+                    context["video_public_url"] = public_url
         if context:
             self.produce(context)
 
