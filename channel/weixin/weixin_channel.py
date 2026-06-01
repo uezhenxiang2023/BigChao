@@ -530,8 +530,12 @@ class WeixinChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
+            video_match_prefix = check_prefix(content, conf().get("video_create_prefix", ["//"]))
             img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
-            if img_match_prefix:
+            if video_match_prefix:
+                content = content.replace(video_match_prefix, "", 1)
+                context.type = ContextType.VIDEO_CREATE
+            elif img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
                 context.type = ContextType.IMAGE_CREATE
             else:
@@ -554,25 +558,53 @@ class WeixinChannel(ChatChannel):
         receiver = context.get("receiver", "")
         msg = context.get("msg")
         context_token = self._get_context_token(receiver, msg)
+        reply_type = reply.type
 
         if not context_token:
-            logger.error(f"[Weixin] No context_token for receiver={receiver}, cannot send")
+            logger.error(
+                "[Weixin] No context_token for receiver=%s, reply_type=%s, cannot send",
+                receiver,
+                reply_type,
+            )
             return
 
-        if reply.type == ReplyType.TEXT:
+        if reply_type == ReplyType.TEXT:
             self._send_text(reply.content, receiver, context_token)
-        elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
+            logger.info("[Weixin] sendMsg=%s, receiver=%s", reply, receiver)
+        elif reply_type == ReplyType.ERROR:
+            error_text = reply.content if reply.content else "网络有点小繁忙，请过几秒再试一试"
+            self._send_text(error_text, receiver, context_token)
+            logger.info("[Weixin] sendError=%s, receiver=%s", error_text, receiver)
+        elif reply_type == ReplyType.INFO:
+            self._send_text(reply.content, receiver, context_token)
+            logger.info("[Weixin] sendInfo=%s, receiver=%s", reply, receiver)
+        elif reply_type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
             self._send_image(reply.content, receiver, context_token)
-        elif reply.type == ReplyType.FILE:
+            logger.info("[Weixin] sendImage=%s, receiver=%s", self._summarize_reply_content(reply.content), receiver)
+        elif reply_type == ReplyType.FILE:
             self._send_file(reply.content, receiver, context_token)
-        elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
+            logger.info("[Weixin] sendFile=%s, receiver=%s", self._summarize_reply_content(reply.content), receiver)
+        elif reply_type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
             self._send_video(reply.content, receiver, context_token)
-        elif reply.type == ReplyType.VOICE:
+            logger.info("[Weixin] sendVideo=%s, receiver=%s", self._summarize_reply_content(reply.content), receiver)
+        elif reply_type == ReplyType.VOICE:
             # ilink has no outbound voice item; deliver TTS as a file attachment.
             self._send_file(reply.content, receiver, context_token)
+            logger.info("[Weixin] sendVoiceAsFile=%s, receiver=%s", self._summarize_reply_content(reply.content), receiver)
         else:
-            logger.warning(f"[Weixin] Unsupported reply type: {reply.type}, fallback to text")
+            logger.warning("[Weixin] Unsupported reply type=%s, fallback to text", reply_type)
             self._send_text(str(reply.content), receiver, context_token)
+            logger.info("[Weixin] sendFallbackText=%s, receiver=%s", self._summarize_reply_content(reply.content), receiver)
+
+    @staticmethod
+    def _summarize_reply_content(content, limit: int = 160) -> str:
+        """Return a compact, log-safe preview of reply content."""
+        if content is None:
+            return ""
+        preview = str(content).replace("\n", "\\n")
+        if len(preview) > limit:
+            preview = preview[:limit] + "..."
+        return preview
 
     def _get_context_token(self, receiver: str, msg=None) -> str:
         """Get the context_token for a receiver, required for all sends."""
@@ -681,8 +713,8 @@ class WeixinChannel(ChatChannel):
             logger.error(f"[Weixin] File send failed: {e}")
             self._send_text("[File send failed]", receiver, context_token)
 
-    def _send_video(self, video_path_or_url: str, receiver: str, context_token: str):
-        local_path = self._resolve_media_path(video_path_or_url)
+    def _send_video(self, video_content, receiver: str, context_token: str):
+        local_path = self._resolve_video_path(video_content, receiver, context_token)
         if not local_path:
             self._send_text("[Video send failed: file not found]", receiver, context_token)
             return
@@ -701,6 +733,32 @@ class WeixinChannel(ChatChannel):
             logger.error(f"[Weixin] Video send failed: {e}")
             self._send_text("[Video send failed]", receiver, context_token)
 
+    def _resolve_video_path(self, video_content, receiver: str, context_token: str) -> str:
+        """Normalize VIDEO/VIDEO_URL reply content to a local video path."""
+        if isinstance(video_content, (tuple, list)) and len(video_content) >= 2:
+            # VIDEO_URL replies are shaped like (duration, url), matching Feishu.
+            video_content = video_content[1]
+
+        if hasattr(video_content, "video_bytes"):
+            tmp_path = f"/tmp/wx_video_{uuid.uuid4().hex[:8]}.mp4"
+            try:
+                with open(tmp_path, "wb") as f:
+                    f.write(video_content.video_bytes)
+                return tmp_path
+            except Exception as e:
+                logger.error(f"[Weixin] Failed to save generated video bytes: {e}")
+                return ""
+
+        if not isinstance(video_content, str):
+            logger.error(
+                "[Weixin] Unsupported video content type=%s, content=%s",
+                type(video_content).__name__,
+                self._summarize_reply_content(video_content),
+            )
+            return ""
+
+        return self._resolve_media_path(video_content)
+
     @staticmethod
     def _resolve_media_path(path_or_url: str) -> str:
         """Resolve a file path or URL to a local file path. Downloads if needed."""
@@ -713,7 +771,7 @@ class WeixinChannel(ChatChannel):
 
         if local_path.startswith(("http://", "https://")):
             try:
-                resp = requests.get(local_path, timeout=60)
+                resp = requests.get(local_path, stream=True, timeout=180)
                 resp.raise_for_status()
                 ct = resp.headers.get("Content-Type", "")
                 ext = ".bin"
@@ -732,7 +790,9 @@ class WeixinChannel(ChatChannel):
 
                 tmp_path = f"/tmp/wx_media_{uuid.uuid4().hex[:8]}{ext}"
                 with open(tmp_path, "wb") as f:
-                    f.write(resp.content)
+                    for block in resp.iter_content(1024 * 1024):
+                        if block:
+                            f.write(block)
                 return tmp_path
             except Exception as e:
                 logger.error(f"[Weixin] Failed to download media: {e}")
