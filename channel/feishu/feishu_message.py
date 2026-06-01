@@ -7,7 +7,7 @@ from config import conf
 from bridge.context import ContextType
 from channel.chat_message import ChatMessage
 from common.log import logger
-from common.tmp_dir import TmpDir
+from common.tmp_dir import get_request_dir
 
 def get_message_resource(*, message_id, file_key, type, file_path):
     """
@@ -175,7 +175,7 @@ class FeishuMessage(ChatMessage):
         self.from_user_id = event.sender.sender_id.open_id
         self.to_user_id = event.message.chat_id
         self.other_user_id = self.from_user_id
-        self.user_dir = TmpDir().path() + str(self.from_user_id) + '/request/'
+        self.user_dir = get_request_dir("feishu", self.from_user_id)
         self.parent_id = event.message.parent_id
 
         if event.message.message_type == 'text':
@@ -183,7 +183,7 @@ class FeishuMessage(ChatMessage):
             self.content = json.loads(event.message.content)["text"]
         elif event.message.message_type == 'audio':
             self.ctype = ContextType.VOICE
-            self.content = TmpDir().path() + event.message["FileName"]  # content直接存临时目录路径
+            self.content = self.user_dir + os.path.basename(event.message["FileName"])  # content直接存临时目录路径
             self._prepare_fn = lambda: event.message.download(self.content)
         elif event.message.message_type == 'image':
             self.ctype = ContextType.IMAGE

@@ -3,7 +3,7 @@ import asyncio
 from bridge.context import ContextType
 from channel.chat_message import ChatMessage
 from common.log import logger
-from common.tmp_dir import TmpDir
+from common.tmp_dir import get_request_dir
 
 
 def get_file(file_id):
@@ -50,7 +50,7 @@ class TelegramMessage(ChatMessage):
         self.from_user_id = telegram_message["from_user"]["id"]
         self.to_user_id = telegram_message["chat_id"]
         self.other_user_id = self.to_user_id
-        self.user_dir = TmpDir().path() + str(self.from_user_id) + '/request/'
+        self.user_dir = get_request_dir("telegram", self.from_user_id)
         reply_to_message = telegram_message.reply_to_message
         self.parent_id = reply_to_message.message_id if reply_to_message else None
 

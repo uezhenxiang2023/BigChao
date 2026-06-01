@@ -17,6 +17,13 @@ class TmpDir(object):
 
     def path(self):
         return str(self.tmpFilePath) + "/"
+
+
+def get_request_dir(channel_type, user_id):
+    """Return tmp/{channel_type}/{user_id}/request/ and ensure it exists."""
+    request_dir = os.path.join(TmpDir().path(), str(channel_type), str(user_id), "request")
+    os.makedirs(request_dir, exist_ok=True)
+    return request_dir + os.sep
     
 def create_user_dir(path):
     """创建用户私有目录"""
