@@ -523,7 +523,6 @@ class WeixinChannel(ChatChannel):
  
         # VIDEO 消息本体公网 URL
         if cmsg.ctype == ContextType.VIDEO:
-            cmsg.prepare()
             public_url = build_public_media_url(cmsg.content)
             if public_url:
                 context["video_public_url"] = public_url
@@ -532,7 +531,6 @@ class WeixinChannel(ChatChannel):
         if cmsg.ctype == ContextType.FILE:
             suffix = os.path.splitext(cmsg.content)[1].lstrip(".").lower()
             if suffix in const.VIDEO:
-                cmsg.prepare()
                 public_url = build_public_media_url(cmsg.content)
                 if public_url:
                     context["video_public_url"] = public_url

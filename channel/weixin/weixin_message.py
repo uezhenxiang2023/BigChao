@@ -106,9 +106,10 @@ class WeixinMessage(ChatMessage):
         if media_item and not text_body:
             self._setup_media(media_item, media_type, cdn_base_url)
         elif media_item and text_body:
-            # Text + media: download media, attach as file ref in text
+            # Text + media: keep a lazy downloader on the message, but do not
+            # fetch the media while parsing the incoming event.
             self.ctype = ContextType.TEXT
-            media_path = self._download_media(media_item, media_type, cdn_base_url)
+            media_path = self._get_media_save_path(media_item, media_type)
             if media_path:
                 if media_type == ITEM_IMAGE:
                     text_body += f"\n[图片: {media_path}]"
@@ -116,6 +117,7 @@ class WeixinMessage(ChatMessage):
                     text_body += f"\n[视频: {media_path}]"
                 else:
                     text_body += f"\n[文件: {media_path}]"
+                self._prepare_fn = self._build_media_prepare_fn(media_item, media_type, cdn_base_url)
             self.content = ref_text + text_body
         else:
             self.ctype = ContextType.TEXT
@@ -125,47 +127,59 @@ class WeixinMessage(ChatMessage):
         """Set up message as a media type, with lazy download via _prepare_fn."""
         if media_type == ITEM_IMAGE:
             self.ctype = ContextType.IMAGE
-            image_path = self._download_media(item, ITEM_IMAGE, cdn_base_url)
-            if image_path:
-                self.content = image_path
-                self.image_path = image_path
-            else:
-                self.ctype = ContextType.TEXT
-                self.content = "[Image download failed]"
+            image_path = self._get_media_save_path(item, ITEM_IMAGE)
+            self.content = image_path
+            self.image_path = image_path
+            self._prepare_fn = self._build_media_prepare_fn(item, ITEM_IMAGE, cdn_base_url)
 
         elif media_type == ITEM_VIDEO:
             self.ctype = ContextType.VIDEO
-            save_path = os.path.join(self.user_dir, f"wx_{self.msg_id}.mp4")
+            save_path = self._get_media_save_path(item, ITEM_VIDEO)
             self.content = save_path
-
-            def _download():
-                path = self._download_media(item, ITEM_VIDEO, cdn_base_url)
-                if path:
-                    self.content = path
-            self._prepare_fn = _download
+            self._prepare_fn = self._build_media_prepare_fn(item, ITEM_VIDEO, cdn_base_url)
 
         elif media_type == ITEM_FILE:
             self.ctype = ContextType.FILE
-            file_name = item.get("file_item", {}).get("file_name", f"wx_{self.msg_id}")
-            save_path = os.path.join(self.user_dir, file_name)
+            save_path = self._get_media_save_path(item, ITEM_FILE)
             self.content = save_path
-
-            def _download():
-                path = self._download_media(item, ITEM_FILE, cdn_base_url)
-                if path:
-                    self.content = path
-            self._prepare_fn = _download
+            self._prepare_fn = self._build_media_prepare_fn(item, ITEM_FILE, cdn_base_url)
 
         elif media_type == ITEM_VOICE:
             self.ctype = ContextType.VOICE
-            save_path = os.path.join(self.user_dir, f"wx_{self.msg_id}.silk")
+            save_path = self._get_media_save_path(item, ITEM_VOICE)
             self.content = save_path
+            self._prepare_fn = self._build_media_prepare_fn(item, ITEM_VOICE, cdn_base_url)
 
-            def _download():
-                path = self._download_media(item, ITEM_VOICE, cdn_base_url)
-                if path:
-                    self.content = path
-            self._prepare_fn = _download
+    def _build_media_prepare_fn(self, item: dict, media_type: int, cdn_base_url: str):
+        def _download():
+            path = self._download_media(item, media_type, cdn_base_url)
+            if path:
+                self.content = path
+                if media_type == ITEM_IMAGE:
+                    self.image_path = path
+
+        return _download
+
+    def _get_media_save_path(self, item: dict, media_type: int) -> str:
+        """Return the local target path without downloading the media."""
+        type_key_map = {
+            ITEM_IMAGE: "image_item",
+            ITEM_VIDEO: "video_item",
+            ITEM_FILE: "file_item",
+            ITEM_VOICE: "voice_item",
+        }
+        key = type_key_map.get(media_type, "")
+        info = item.get(key, {})
+
+        if media_type == ITEM_FILE:
+            original_name = info.get("file_name", "")
+            if original_name:
+                return os.path.join(self.user_dir, original_name)
+            return os.path.join(self.user_dir, f"wx_{self.msg_id}.bin")
+
+        ext_map = {ITEM_IMAGE: ".jpg", ITEM_VIDEO: ".mp4", ITEM_VOICE: ".silk"}
+        ext = ext_map.get(media_type, "")
+        return os.path.join(self.user_dir, f"wx_{self.msg_id}{ext}")
 
     def _download_media(self, item: dict, media_type: int, cdn_base_url: str) -> str:
         """Download media from CDN, returns local file path or empty string."""
@@ -187,16 +201,7 @@ class WeixinMessage(ChatMessage):
             logger.warning(f"[Weixin] Missing CDN params for media download (type={media_type})")
             return ""
 
-        if media_type == ITEM_FILE:
-            original_name = info.get("file_name", "")
-            if original_name:
-                save_path = os.path.join(self.user_dir, original_name)
-            else:
-                save_path = os.path.join(self.user_dir, f"wx_{self.msg_id}.bin")
-        else:
-            ext_map = {ITEM_IMAGE: ".jpg", ITEM_VIDEO: ".mp4", ITEM_VOICE: ".silk"}
-            ext = ext_map.get(media_type, "")
-            save_path = os.path.join(self.user_dir, f"wx_{self.msg_id}{ext}")
+        save_path = self._get_media_save_path(item, media_type)
 
         try:
             download_media_from_cdn(cdn_base_url, encrypt_param, aes_key, save_path)
