@@ -22,7 +22,7 @@ from common import const
 from common.expired_dict import ExpiredDict
 from common.tool_button import tool_state
 from common.model_status import model_state
-from common.tmp_dir import TmpDir
+from common.tmp_dir import TmpDir, get_response_dir
 from config import conf
 from bridge.context import ContextType
 from channel.chat_channel import ChatChannel
@@ -30,7 +30,6 @@ from channel.chat_message import ChatMessage
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.adapter.flask import *
-from common.tmp_dir import TmpDir, create_user_dir
 
 
 @singleton
@@ -557,10 +556,7 @@ class FeiShuChanel(ChatChannel):
                     image_storage.write(block)
                 logger.info(f"[Lark] download image success, size={size}, img_url={response}")
                 image_storage.seek(0)
-                user_dir = TmpDir().path() + str(receiver) + '/response/'
-                user_dir_exists = os.path.exists(user_dir)
-                if not user_dir_exists:
-                    create_user_dir(user_dir)
+                user_dir = get_response_dir(conf().get("channel_type", "feishu"), receiver)
                 image_path = user_dir + file_name
                 with open(image_path, 'wb') as f:
                     f.write(image_storage.read())
@@ -587,10 +583,7 @@ class FeiShuChanel(ChatChannel):
                             image = BytesIO(part.inline_data.data)
                             logger.info(f"[Lark_{image_model_id}] reply={image}")
                             image.seek(0)
-                            user_dir = TmpDir().path() + str(receiver) + '/response/'
-                            user_dir_exists = os.path.exists(user_dir)
-                            if not user_dir_exists:
-                                create_user_dir(user_dir)
+                            user_dir = get_response_dir(conf().get("channel_type", "feishu"), receiver)
                             response_uuid = str(uuid.uuid4())
                             image_path = user_dir + response_uuid + '.' + image_type
                             with open(image_path, 'wb') as f:
@@ -609,10 +602,7 @@ class FeiShuChanel(ChatChannel):
                         image_type = (pil_image.format or "PNG").lower()
                 except Exception:
                     image_type = "png"
-                user_dir = TmpDir().path() + str(receiver) + '/response/'
-                user_dir_exists = os.path.exists(user_dir)
-                if not user_dir_exists:
-                    create_user_dir(user_dir)
+                user_dir = get_response_dir(conf().get("channel_type", "feishu"), receiver)
                 response_uuid = str(uuid.uuid4())
                 image_path = user_dir + response_uuid + '.' + image_type
                 with open(image_path, 'wb') as f:
@@ -657,10 +647,7 @@ class FeiShuChanel(ChatChannel):
     
     def save_media_file(self, receiver, media_storage, file_name):
         """将网页链接中的图片或视频文件存储到本地硬盘"""
-        user_dir = TmpDir().path() + str(receiver) + '/response/'
-        user_dir_exists = os.path.exists(user_dir)
-        if not user_dir_exists:
-            create_user_dir(user_dir)
+        user_dir = get_response_dir(conf().get("channel_type", "feishu"), receiver)
         media_path = user_dir + file_name
         with open(media_path, 'wb') as f:
             f.write(media_storage.read())
