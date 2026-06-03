@@ -6,6 +6,7 @@ Login via QR code scan through the ilink bot API.
 """
 
 import json
+import io
 import os
 import threading
 import time
@@ -26,6 +27,7 @@ from common.expired_dict import ExpiredDict
 from common.log import logger
 from common.media_store import build_public_media_url
 from common.singleton import singleton
+from common.tmp_dir import get_response_dir
 from config import conf
 
 MAX_CONSECUTIVE_FAILURES = 3
@@ -694,8 +696,13 @@ class WeixinChannel(ChatChannel):
             text = text[cut:].lstrip("\n")
         return chunks
 
-    def _send_image(self, img_path_or_url: str, receiver: str, context_token: str):
-        local_path = self._resolve_media_path(img_path_or_url)
+    def _send_image(self, img_path_or_url, receiver: str, context_token: str):
+        if isinstance(img_path_or_url, (list, tuple)):
+            for image_item in img_path_or_url:
+                self._send_image(image_item, receiver, context_token)
+            return
+
+        local_path = self._resolve_media_path(img_path_or_url, receiver)
         if not local_path:
             self._send_text("[Image send failed: file not found]", receiver, context_token)
             return
@@ -715,7 +722,7 @@ class WeixinChannel(ChatChannel):
             self._send_text("[Image send failed]", receiver, context_token)
 
     def _send_file(self, file_path_or_url: str, receiver: str, context_token: str):
-        local_path = self._resolve_media_path(file_path_or_url)
+        local_path = self._resolve_media_path(file_path_or_url, receiver)
         if not local_path:
             self._send_text("[File send failed: file not found]", receiver, context_token)
             return
@@ -779,12 +786,49 @@ class WeixinChannel(ChatChannel):
             )
             return ""
 
-        return self._resolve_media_path(video_content)
+        return self._resolve_media_path(video_content, receiver)
 
-    @staticmethod
-    def _resolve_media_path(path_or_url: str) -> str:
+    def _resolve_media_path(self, path_or_url, receiver: str = "") -> str:
         """Resolve a file path or URL to a local file path. Downloads if needed."""
         if not path_or_url:
+            return ""
+
+        if isinstance(path_or_url, (bytes, bytearray)):
+            return self._save_media_bytes(bytes(path_or_url), receiver)
+
+        if isinstance(path_or_url, io.BytesIO):
+            try:
+                pos = path_or_url.tell()
+            except Exception:
+                pos = None
+            try:
+                path_or_url.seek(0)
+                media_bytes = path_or_url.read()
+            except Exception as e:
+                logger.error(f"[Weixin] Failed to read in-memory media: {e}")
+                return ""
+            finally:
+                if pos is not None:
+                    try:
+                        path_or_url.seek(pos)
+                    except Exception:
+                        pass
+            return self._save_media_bytes(media_bytes, receiver)
+
+        if hasattr(path_or_url, "read"):
+            try:
+                media_bytes = path_or_url.read()
+            except Exception as e:
+                logger.error(f"[Weixin] Failed to read file-like media: {e}")
+                return ""
+            return self._save_media_bytes(media_bytes, receiver)
+
+        if not isinstance(path_or_url, str):
+            logger.error(
+                "[Weixin] Unsupported media content type=%s, content=%s",
+                type(path_or_url).__name__,
+                self._summarize_reply_content(path_or_url),
+            )
             return ""
 
         local_path = path_or_url
@@ -810,7 +854,7 @@ class WeixinChannel(ChatChannel):
                 elif "pdf" in ct:
                     ext = ".pdf"
 
-                tmp_path = f"/tmp/wx_media_{uuid.uuid4().hex[:8]}{ext}"
+                tmp_path = self._build_response_media_path(receiver, ext)
                 with open(tmp_path, "wb") as f:
                     for block in resp.iter_content(1024 * 1024):
                         if block:
@@ -825,3 +869,36 @@ class WeixinChannel(ChatChannel):
 
         logger.warning(f"[Weixin] Media file not found: {local_path}")
         return ""
+
+    def _save_media_bytes(self, media_bytes: bytes, receiver: str = "") -> str:
+        if not media_bytes:
+            return ""
+        ext = self._guess_media_extension(media_bytes)
+        tmp_path = self._build_response_media_path(receiver, ext)
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(media_bytes)
+            return tmp_path
+        except Exception as e:
+            logger.error(f"[Weixin] Failed to save in-memory media: {e}")
+            return ""
+
+    def _guess_media_extension(self, media_bytes: bytes) -> str:
+        if media_bytes.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if media_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if media_bytes.startswith(b"GIF87a") or media_bytes.startswith(b"GIF89a"):
+            return ".gif"
+        if media_bytes.startswith(b"RIFF") and media_bytes[8:12] == b"WEBP":
+            return ".webp"
+        if media_bytes.startswith(b"%PDF"):
+            return ".pdf"
+        if len(media_bytes) > 12 and media_bytes[4:8] == b"ftyp":
+            return ".mp4"
+        return ".bin"
+
+    def _build_response_media_path(self, receiver: str, ext: str) -> str:
+        channel_type = getattr(self, "channel_type", None) or conf().get("channel_type", "wx")
+        response_dir = get_response_dir(channel_type, receiver or "unknown")
+        return os.path.join(response_dir, f"{uuid.uuid4()}{ext}")
