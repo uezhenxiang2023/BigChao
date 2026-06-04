@@ -178,7 +178,7 @@ def build_seedream_size(model, configured_size, aspect_ratio):
 
 def _get_seedream_supported_sizes(model):
     if model == const.DOUBAO_SEEDREAM_5:
-        return ["2K", "3K"]
+        return ["2K", "3K", "4K"]
     if model == const.DOUBAO_SEEDREAM_45:
         return ["2K", "4K"]
     if model == const.DOUBAO_SEEDREAM_4:
@@ -208,6 +208,16 @@ def _get_seedream_ratio_size_map(model, image_size):
                 "3:2": "3744x2496",
                 "2:3": "2496x3744",
                 "21:9": "4704x2016",
+            },
+            "4K": {
+                "1:1": "4096x4096",
+                "3:4": "3520x4704",
+                "4:3": "4704x3520",
+                "16:9": "5504x3040",
+                "9:16": "3040x5504",
+                "3:2": "4992x3328",
+                "2:3": "3328x4992",
+                "21:9": "6240x2656",
             },
         }.get(image_size, {})
     if model in {const.DOUBAO_SEEDREAM_45, const.DOUBAO_SEEDREAM_4}:
