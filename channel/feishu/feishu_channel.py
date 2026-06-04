@@ -560,7 +560,7 @@ class FeiShuChanel(ChatChannel):
                 image_path = user_dir + file_name
                 with open(image_path, 'wb') as f:
                     f.write(image_storage.read())
-                self.send_image(image_path, toUserName=receiver)
+                self.send_image(image_path, toUserName=receiver, source_url=response)
                 logger.info("[Lark] sendImage url={}, receiver={}".format(response, receiver))
         elif reply.type == ReplyType.IMAGE:  # 从文件读取图片
             image_model_id = self._get_current_image_model_id(receiver)
@@ -719,13 +719,24 @@ class FeiShuChanel(ChatChannel):
                 f"client.im.v1.chat.create failed, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}"
             )
 
-    def send_image(self, reply_content, toUserName):
+    def send_image(self, reply_content, toUserName, source_url=None):
         """
         This function sends a response image back to the user.
         """
         # 创建client
+        max_image_size = 10 * 1024 * 1024
+        image_size = os.path.getsize(reply_content)
+        if image_size > max_image_size and source_url:
+            reply_text = f"图片过大，请点击链接在网页中下载。\n{source_url}"
+            logger.info("[Lark] image too large, send url as text, size={}, receiver={}".format(image_size, toUserName))
+            self.send_text(reply_text, toUserName)
+            return
+
         client = self.client
         image_key = self.create_image(reply_content)
+        if not image_key:
+            logger.error("[Lark] create image failed, image_path={}, receiver={}".format(reply_content, toUserName))
+            return
         content = json.dumps(
             {
                 "image_key": image_key
