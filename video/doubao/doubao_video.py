@@ -399,7 +399,7 @@ class DoubaoVideoBot(Bot):
         return {"480p", "720p", "1080p"}
 
     def _get_default_resolution_for_model(self, model):
-        return "480p"
+        return "720p"
 
     def _ratio_to_float(self, ratio):
         try:
