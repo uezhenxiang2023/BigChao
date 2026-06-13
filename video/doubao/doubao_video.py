@@ -361,9 +361,6 @@ class DoubaoVideoBot(Bot):
             fallback_resolution = self._get_default_resolution_for_model(model)
             logger.warning(f"[{model.upper()}] invalid resolution={resolution}, fallback to {fallback_resolution}")
             normalized_resolution = fallback_resolution
-        if has_reference and normalized_resolution == "1080p":
-            logger.warning(f"[{model.upper()}] resolution=1080p is not supported with reference images, fallback to 720p")
-            return "720p"
         return normalized_resolution
 
     def _get_allowed_ratios_for_model(self, model):
@@ -397,14 +394,12 @@ class DoubaoVideoBot(Bot):
         return 5
 
     def _get_allowed_resolutions_for_model(self, model):
-        if model in {const.DOUBAO_SEEDANCE_20, const.DOUBAO_SEEDANCE_20_FAST}:
+        if model == const.DOUBAO_SEEDANCE_20_FAST:
             return {"480p", "720p"}
         return {"480p", "720p", "1080p"}
 
     def _get_default_resolution_for_model(self, model):
-        if model in {const.DOUBAO_SEEDANCE_20, const.DOUBAO_SEEDANCE_20_FAST}:
-            return "720p"
-        return "720p"
+        return "480p"
 
     def _ratio_to_float(self, ratio):
         try:

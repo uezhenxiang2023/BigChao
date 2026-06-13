@@ -117,10 +117,20 @@ def get_image_from_session(session_id):
 
 
 def _get_image_mime_type(image_file):
-    image_type = type(image_file).__name__
-    if image_type == "PngImageFile":
-        return "image/png"
-    return "image/jpeg"
+    image_format = str(getattr(image_file, "format", "") or "").strip().lower()
+    mime_type_map = {
+        "jpeg": "image/jpeg",
+        "jpg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "bmp": "image/bmp",
+        "tiff": "image/tiff",
+        "tif": "image/tiff",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+    }
+    return mime_type_map.get(image_format, "image/jpeg")
 
 
 def _get_video_mime_type(video_path, video_file):

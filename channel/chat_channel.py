@@ -374,6 +374,8 @@ class ChatChannel(Channel):
                             img.save(img_path_no_alpha)
                             # Update img_path with the path to the converted image
                             image_path = img_path_no_alpha
+                            img.format = "JPEG"
+                            image_file = img
                         cache_media(image_path, image_file, context)
                 else:
                     logger.warning(f'[{model.upper()}] query with unsupported image type:{mime_type}') 

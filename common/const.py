@@ -254,7 +254,7 @@ DINGTALK = "dingtalk"
 TELEGRAM = "telegram"
 
 # media files type
-IMAGE = ['png', 'jpg', 'jpeg', 'webp', 'heic', 'heif']
+IMAGE = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff', 'tif', 'gif', 'heic', 'heif']
 AUDIO = ['wav', 'mp3', 'aiff', 'aac', 'ogg', 'flac']
 VIDEO = ['mp4', 'mpeg', 'mov', 'avi', 'x-flv', 'mpg', 'webm', 'wmv', '3gpp']
 TXT = ['rtf', 'md', 'css', 'html', 'plain', 'javascript']
