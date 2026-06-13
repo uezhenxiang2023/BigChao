@@ -35,11 +35,28 @@ OPENAI_ERROR_CODE_MESSAGES = {
 }
 
 
+OPENAI_IMAGE_MODERATION_STAGE_MESSAGES = {
+    "input": "输入内容或参考图",
+    "output": "生成结果",
+    "unknown": "未知阶段",
+}
+
+OPENAI_IMAGE_MODERATION_CATEGORY_MESSAGES = {
+    "harassment": "骚扰或攻击性内容",
+    "self-harm": "自伤/自残相关内容",
+    "sexual": "性相关内容",
+    "violence": "暴力相关内容",
+}
+
+
 def format_openai_error(error, model, *, service_name="OpenAI"):
     status_code = extract_openai_status_code(error)
     error_code = extract_openai_error_code(error)
     message = extract_openai_error_message(error)
     request_id = extract_openai_request_id(error)
+
+    if error_code == "moderation_blocked":
+        return format_openai_image_moderation_error(error, model, request_id=request_id)
 
     request_text = f" request_id={request_id}" if request_id else ""
     code_text = f"，错误码={error_code}" if error_code else ""
@@ -60,6 +77,34 @@ def format_openai_error(error, model, *, service_name="OpenAI"):
     if message:
         base_message = f"{base_message}（{message}）"
     return f"[{str(model).upper()}] {base_message}{code_text}{request_text}"
+
+
+def format_openai_image_moderation_error(error, model, *, request_id=None):
+    details = extract_openai_moderation_details(error)
+    stage = details.get("moderation_stage")
+    categories = details.get("categories") or []
+
+    stage_text = OPENAI_IMAGE_MODERATION_STAGE_MESSAGES.get(stage, stage or "未知阶段")
+    category_texts = [
+        OPENAI_IMAGE_MODERATION_CATEGORY_MESSAGES.get(category, str(category))
+        for category in categories
+        if category
+    ]
+    reason_text = "、".join(category_texts) if category_texts else "安全策略相关内容"
+
+    if stage == "output":
+        hint = "建议调整提示词后重新生成。"
+    else:
+        hint = "建议调整提示词或更换参考图后重试。"
+
+    request_text = f"\nrequest_id={request_id}" if request_id else ""
+    return (
+        f"[{str(model).upper()}] 图片生成被安全系统拦截，未能完成本次请求。\n"
+        f"拦截阶段：{stage_text}\n"
+        f"可能原因：{reason_text}\n"
+        f"{hint}"
+        f"{request_text}"
+    )
 
 
 def is_openai_error(error):
@@ -143,6 +188,12 @@ def extract_openai_error_code(error):
     payload = extract_openai_error_payload(error)
     code = getattr(error, "code", None) or payload.get("code") or payload.get("type")
     return str(code) if code else None
+
+
+def extract_openai_moderation_details(error):
+    payload = extract_openai_error_payload(error)
+    details = payload.get("moderation_details") if isinstance(payload, dict) else None
+    return details if isinstance(details, dict) else {}
 
 
 def extract_openai_error_message(error):

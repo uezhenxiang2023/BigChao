@@ -249,6 +249,8 @@ class GPTImageBot(Bot):
                 logger.warning(f"[{model.upper()}] {action} with args={list(attempt.keys())} failed: {e}")
                 continue
             except openai.BadRequestError as e:
+                if self._is_non_retryable_image_user_error(e):
+                    raise
                 if "response_format" not in attempt:
                     last_err = e
                     logger.warning(f"[{model.upper()}] {action} fallback with response_format=b64_json: {e}")
@@ -257,6 +259,13 @@ class GPTImageBot(Bot):
         if last_err:
             raise last_err
         raise RuntimeError(f"{action} image failed")
+
+    def _is_non_retryable_image_user_error(self, error):
+        body = getattr(error, "body", None)
+        payload = body.get("error") if isinstance(body, dict) and isinstance(body.get("error"), dict) else body
+        if not isinstance(payload, dict):
+            return False
+        return payload.get("code") == "moderation_blocked" or payload.get("type") == "image_generation_user_error"
 
     def _post_compatible_images_api(self, url, kwargs, model, action):
         headers = {
