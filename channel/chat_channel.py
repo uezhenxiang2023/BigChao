@@ -357,7 +357,7 @@ class ChatChannel(Channel):
                     else model_state.get_basic_state(session_id)
                 )
                 logger.info(f'[{model.upper()}] query with image, path={image_path}')
-                mime_type = image_path[(image_path.rfind('.') + 1):]
+                mime_type = image_path[(image_path.rfind('.') + 1):].lower()
                 type_id = 'image'
                 channel_type = conf().get("channel_type")
                 if mime_type in const.IMAGE or channel_type == 'feishu':
@@ -390,7 +390,7 @@ class ChatChannel(Channel):
                 if not dir_exists:
                     create_user_dir(dir_path)
                 logger.info(f'[{model.upper()}] query with file, path={file_path}')
-                mime_type = file_path[(file_path.rfind('.') + 1):]
+                mime_type = file_path[(file_path.rfind('.') + 1):].lower()
                 type_id = 'application'
                 if mime_type in const.VIDEO:
                     with cache_lock:
