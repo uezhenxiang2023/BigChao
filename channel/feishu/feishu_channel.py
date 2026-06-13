@@ -242,6 +242,10 @@ class FeiShuChanel(ChatChannel):
             model_state.toggle_video_model(open_id, const.GROK_IMAGINE_VIDEO)
             self.send_text(f"[INFO]\n视频模型已切换为：{const.GROK_IMAGINE_VIDEO}", open_id)
             logger.info(f'[Lark] switch video model to {const.GROK_IMAGINE_VIDEO.upper()}, requester={open_id}')
+        elif event_key == 'LumaVideo':
+            model_state.toggle_video_model(open_id, const.LUMA_RAY_32)
+            self.send_text(f"[INFO]\n视频模型已切换为：{const.LUMA_RAY_32}", open_id)
+            logger.info(f'[Lark] switch video model to {const.LUMA_RAY_32.upper()}, requester={open_id}')
 
     def handle_webhook_event(self):
         """Webhook event handler"""

@@ -38,7 +38,8 @@ class TelegramChannel(ChatChannel):
         'Seedance': const.DOUBAO_SEEDANCE_20,
         'KlingVideo': const.KLING_V3_OMNI,
         'Veo': const.VEO_31,
-        'GrokVideo': const.GROK_IMAGINE_VIDEO
+        'GrokVideo': const.GROK_IMAGINE_VIDEO,
+        'LumaVideo': const.LUMA_RAY_32
     }
     def __init__(self, session_id=None):
         super().__init__()
@@ -83,7 +84,7 @@ class TelegramChannel(ChatChannel):
         self.IMAGE_MODEL_OPTIONS = ["Seedream", "KlingImage", "GPTImage", "NanoBanana", "GrokImage", "LumaImage"]
         self.VIDEO_MODEL_MENU_TITLE = "<b>Video Model</b>\n\nPick a video model."
         self.VIDEO_MODEL_CALLBACK_PREFIX = "video_model:"
-        self.VIDEO_MODEL_OPTIONS = ["Seedance", "KlingVideo", "Veo", "GrokVideo"]
+        self.VIDEO_MODEL_OPTIONS = ["Seedance", "KlingVideo", "Veo", "GrokVideo", "LumaVideo"]
 
         self.SKILL_MAP = {
             'print': self.print,

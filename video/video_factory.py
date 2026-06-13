@@ -18,4 +18,7 @@ def create_video(video_type):
     if video_type in const.GROK_VIDEO_LIST:
         from video.grok.grok_video import GrokVideoBot
         return GrokVideoBot()
+    if video_type in const.LUMA_VIDEO_LIST:
+        from video.luma.luma_video import LumaVideoBot
+        return LumaVideoBot()
     raise RuntimeError(f"Unsupported image model: {video_type}")
