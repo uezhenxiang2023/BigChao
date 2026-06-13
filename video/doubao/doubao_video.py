@@ -48,7 +48,12 @@ class DoubaoVideoBot(Bot):
             file_cache = memory.USER_IMAGE_CACHE.get(session_id)
             quoted_video_cache = memory.USER_QUOTED_VIDEO_CACHE.get(session_id)
             video_cache = memory.USER_VIDEO_CACHE.get(session_id)
-            has_video_reference_source = self._video_mode_supports_reference_media(video_mode) and bool(
+            has_direct_image_reference_source = bool(quoted_cache or file_cache)
+            can_use_reference_video = self._should_use_reference_video(
+                video_mode,
+                has_direct_image_reference_source=has_direct_image_reference_source
+            )
+            has_video_reference_source = can_use_reference_video and bool(
                 quoted_video_cache or video_cache
             )
             duration_seconds = self._normalize_duration_for_model(model, video_state.get_video_duration(session_id))
@@ -111,7 +116,7 @@ class DoubaoVideoBot(Bot):
                         ])
                         logger.info(f"[{model.upper()}] 从 session 历史取参考图, count={len(session_images)}")
 
-            if self._video_mode_supports_reference_media(video_mode):
+            if can_use_reference_video:
                 if quoted_video_cache:
                     selected_video_cache = quoted_video_cache
                     reference_videos = self._build_reference_videos(quoted_video_cache, model)
@@ -130,7 +135,7 @@ class DoubaoVideoBot(Bot):
                     memory.USER_VIDEO_CACHE.pop(session_id)
             else:
                 if quoted_video_cache or video_cache:
-                    logger.info(f"[{model.upper()}] 当前为首尾帧模式，已跳过参考视频素材")
+                    logger.info(f"[{model.upper()}] 当前为首尾帧模式且存在图片缓存，已跳过参考视频素材")
                 memory.USER_QUOTED_VIDEO_CACHE.pop(session_id, None)
                 memory.USER_VIDEO_CACHE.pop(session_id, None)
 
@@ -293,8 +298,13 @@ class DoubaoVideoBot(Bot):
             return "reference"
         return "reference"
 
-    def _video_mode_supports_reference_media(self, video_mode):
-        return self._normalize_video_mode(video_mode) == "reference"
+    def _should_use_reference_video(self, video_mode, has_direct_image_reference_source):
+        normalized_mode = self._normalize_video_mode(video_mode)
+        if normalized_mode == "reference":
+            return True
+        if normalized_mode == "first_last":
+            return not has_direct_image_reference_source
+        return False
 
     def _infer_aspect_ratio_from_video_cache(self, video_cache, model):
         ratio = infer_aspect_ratio_from_video_cache(
