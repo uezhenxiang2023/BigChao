@@ -28,6 +28,7 @@ from common.log import logger
 from common.media_store import build_public_media_url
 from common.singleton import singleton
 from common.tmp_dir import get_response_dir
+from common.tmp_media_server import start_tmp_media_server
 from config import conf
 
 MAX_CONSECUTIVE_FAILURES = 3
@@ -127,6 +128,7 @@ class WeixinChannel(ChatChannel):
 
         logger.info(f"[Weixin] 微信通道已启动，凭证保存在 {self._credentials_path}，"
                      f"如需重新扫码登录请删除该文件后重启")
+        self._start_local_tmp_media_server_if_needed()
         self.report_startup_success()
 
         self._poll_loop()
@@ -152,6 +154,14 @@ class WeixinChannel(ChatChannel):
     def stop(self):
         logger.info("[Weixin] stop() called")
         self._stop_event.set()
+
+    def _start_local_tmp_media_server_if_needed(self):
+        provider = str(conf().get("media_store_provider", "local") or "local").strip().lower()
+        base_url = str(conf().get("media_public_base_url", "") or "").strip()
+        if provider != "local" or not base_url:
+            return
+        port = conf().get("feishu_webhook_port", 7777)
+        start_tmp_media_server(port)
 
     def _relogin(self) -> bool:
         """Re-login after session expiry. Returns True on success."""
