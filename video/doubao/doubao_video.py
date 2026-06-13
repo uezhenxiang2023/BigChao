@@ -146,7 +146,7 @@ class DoubaoVideoBot(Bot):
 
             if reference_image_count:
                 image_role_summary = self._apply_image_roles(content, video_mode, model)
-                logger.info(f"[{model.upper()}] 图片角色识别结果: {image_role_summary}")
+                logger.info(f"[{model.upper()}] 图片角色(content.role)识别结果: {image_role_summary}")
 
             final_resolution = self._normalize_resolution_for_model(model, request_resolution, has_reference=bool(content[1:]))
             final_ratio = self._normalize_ratio_for_model(model, ratio)
