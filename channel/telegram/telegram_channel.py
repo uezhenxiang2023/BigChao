@@ -76,9 +76,9 @@ class TelegramChannel(ChatChannel):
         self.IMAGE_MODE_MENU_TITLE = "<b>Image Mode</b>\n\nGenerate new image or edit exiting image."
         self.IMAGE_MODE_CALLBACK_PREFIX = "image_mode:"
         self.IMAGE_MODE_OPTIONS = ["Generation", "Editing"]
-        self.VIDEO_MODE_MENU_TITLE = "<b>Video Mode</b>\n\nImage role for image to video generation."
+        self.VIDEO_MODE_MENU_TITLE = "<b>Video Mode</b>\n\nContent role for video generation."
         self.VIDEO_MODE_CALLBACK_PREFIX = "video_mode:"
-        self.VIDEO_MODE_OPTIONS = ["FirstLast", "Reference"]
+        self.VIDEO_MODE_OPTIONS = ["FirstLast", "Reference", "VideoEdit", "VideoExtend"]
         self.IMAGE_MODEL_MENU_TITLE = "<b>Image Model</b>\n\nPick a image model."
         self.IMAGE_MODEL_CALLBACK_PREFIX = "image_model:"
         self.IMAGE_MODEL_OPTIONS = ["Seedream", "KlingImage", "GPTImage", "NanoBanana", "GrokImage", "LumaImage"]
