@@ -39,6 +39,7 @@ class DoubaoVideoBot(Bot):
             session_id = context["session_id"]
             model = model_state.get_video_state(session_id)
             video_mode = model_state.get_video_mode(session_id)
+            watermark = model_state.get_watermark(session_id)
             session_manager = get_chat_session_manager(session_id)
             logger.info(f"[{model.upper()}] query={query}, video_mode={video_mode}, requester={session_id}")
             session_manager.session_query(query, session_id)
@@ -162,7 +163,7 @@ class DoubaoVideoBot(Bot):
             )
             logger.info(
                 f"[{model.upper()}] 请求参数: resolution={final_resolution}, "
-                f"ratio={final_ratio}, duration={duration_seconds}, generate_audio={generate_audio}"
+                f"ratio={final_ratio}, duration={duration_seconds}, generate_audio={generate_audio}, watermark={watermark}"
             )
 
             try:
@@ -172,7 +173,8 @@ class DoubaoVideoBot(Bot):
                         content=content,
                         resolution=final_resolution,
                         ratio=final_ratio,
-                        duration_seconds=duration_seconds
+                        duration_seconds=duration_seconds,
+                        watermark=watermark
                     )
                 )
             except Exception as e:
@@ -222,7 +224,7 @@ class DoubaoVideoBot(Bot):
             logger.info(f"[{model.upper()}] current status={status}, task_id={task_id}, retry after 30 seconds")
             time.sleep(30)
 
-    def _build_task_params(self, *, model, content, resolution, ratio, duration_seconds):
+    def _build_task_params(self, *, model, content, resolution, ratio, duration_seconds, watermark):
         generate_audio = self._should_enable_audio(model)
         params = {
             "model": model,
@@ -231,7 +233,7 @@ class DoubaoVideoBot(Bot):
             "ratio": ratio,
             "duration": duration_seconds,
             "camera_fixed": False,
-            "watermark": True,
+            "watermark": watermark,
         }
 
         if generate_audio is not None:

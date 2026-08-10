@@ -49,7 +49,8 @@ available_setting = {
     "text_to_video": "doubao-seedance-1-0-pro-250528", # 视频编辑模型
     "video_mode": "FirstLast", # 视频生成模式，可选 FirstLast、Reference
     "duration_seconds": 4, # 视频默认时长
-    "video_resolution": "720p", # 视频默认分辨率 
+    "video_resolution": "720p", # 视频默认分辨率
+    "watermark": True, # 图片/视频 模型生成内容是否带水印
     "group_chat_exit_group": False, 
     # chatgpt会话参数
     "expires_in_seconds": 3600,  # 无操作会话的过期时间

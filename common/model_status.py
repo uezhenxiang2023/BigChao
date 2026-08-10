@@ -17,7 +17,8 @@ class UserModelState:
                 'image_quality': conf().get('image_create_quality', 'low'),
                 'text_to_voice': conf().get('text_to_voice'),
                 'text_to_video': conf().get('text_to_video'),
-                'video_mode': conf().get('video_mode', 'FirstLast')
+                'video_mode': conf().get('video_mode', 'FirstLast'),
+                'watermark': conf().get('watermark', True)
             }
         return self._model_states[user_id]
     
@@ -69,6 +70,12 @@ class UserModelState:
         state['video_mode'] = video_mode
         return state['video_mode']
 
+    def toggle_watermark(self, user_id, watermark):
+            """切换用户视频/图片模型的水印状态"""
+            state = self.__get_model_state__(user_id)
+            state['watermark'] = watermark
+            return state['watermark']
+
     def get_basic_state(self, user_id):
         """获取用户基础模型状态"""
         return self.__get_model_state__(user_id)['model']
@@ -100,6 +107,10 @@ class UserModelState:
     def get_video_mode(self, user_id):
         """获取用户视频模式状态"""
         return self.__get_model_state__(user_id)['video_mode']
+
+    def get_watermark(self, user_id):
+            """获取用户视频/图片模型的水印状态"""
+            return self.__get_model_state__(user_id)['watermark']
     
     def clear_model_state(self, user_id):
         """清除用户状态"""
