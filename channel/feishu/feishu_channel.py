@@ -190,11 +190,19 @@ class FeiShuChanel(ChatChannel):
             logger.info(f'[Lark] switch image mode to {event_key}, requester={open_id}')
         elif event_key == 'FirstLast':
             model_state.toggle_video_mode(open_id, event_key)
-            self.send_text(f"[INFO]\n视频模式已切换为：首尾帧模式", open_id)
+            self.send_text(f"[INFO]\n视频模式已切换为：首尾帧生成模式", open_id)
             logger.info(f'[Lark] switch video mode to {event_key}, requester={open_id}')
         elif event_key == 'Reference':
             model_state.toggle_video_mode(open_id, event_key)
-            self.send_text(f"[INFO]\n视频模式已切换为：参考媒体模式", open_id)
+            self.send_text(f"[INFO]\n视频模式已切换为：参考图生成模式", open_id)
+            logger.info(f'[Lark] switch video mode to {event_key}, requester={open_id}')
+        elif event_key == 'VideoEdit':
+            model_state.toggle_video_mode(open_id, event_key)
+            self.send_text(f"[INFO]\n视频模式已切换为：视频编辑模式", open_id)
+            logger.info(f'[Lark] switch video mode to {event_key}, requester={open_id}')
+        elif event_key == 'VideoExtend':
+            model_state.toggle_video_mode(open_id, event_key)
+            self.send_text(f"[INFO]\n视频模式已切换为：视频延长模式", open_id)
             logger.info(f'[Lark] switch video mode to {event_key}, requester={open_id}')
         elif event_key == 'searching':
             self.search(open_id)
