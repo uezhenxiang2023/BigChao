@@ -353,6 +353,10 @@ class GoogleGeminiBot(Bot):
         )
         # 用字典存储用户会话实例
         self.user_chats = {}
+        # Chat keeps using the client that created it.  Retain that client for
+        # the lifetime of the cached chat; replacing the only client reference
+        # can close its underlying HTTP transport between messages.
+        self.user_chat_clients = {}
 
     def _get_client_by_model(self, model):
         api_key = self.api_key_paid if model in const.GEMINI_PAID else self.api_key
@@ -361,9 +365,10 @@ class GoogleGeminiBot(Bot):
     def _get_user_chat(self, session_id, model):
         """获取指定用户的chat实例,如果不存在则创建新的"""
         chat_key = f"{session_id}:{model}"
-        self.client = self._get_client_by_model(model)
         if chat_key not in self.user_chats:
-            self.user_chats[chat_key] = self.client.chats.create(
+            client = self._get_client_by_model(model)
+            self.user_chat_clients[chat_key] = client
+            self.user_chats[chat_key] = client.chats.create(
                 model=model,
                 config=GenerateContentConfig(
                     system_instruction=self.system_prompt,
@@ -378,6 +383,7 @@ class GoogleGeminiBot(Bot):
                     **self.generation_config
                 )
             )
+        self.client = self.user_chat_clients[chat_key]
         return self.user_chats[chat_key]
 
     def _build_request_contents(self, query: str, session_id: str):
@@ -474,7 +480,6 @@ class GoogleGeminiBot(Bot):
             session_id = context["session_id"]
             self.model = model_state.get_basic_state(session_id)
             self.Model_ID = self.model.upper()
-            self.client = self._get_client_by_model(self.model)
 
             if context.type == ContextType.TEXT:
                 logger.info(f"[{self.Model_ID}] query={query}, requester={session_id}")
