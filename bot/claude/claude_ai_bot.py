@@ -1,6 +1,9 @@
-import io
-import os
+import asyncio
 import base64
+import io
+import json
+import os
+from pathlib import Path
 
 from anthropic import Anthropic
 from bot.bot import Bot
@@ -90,6 +93,9 @@ class ClaudeAIBot(Bot):
                 system=self.system_prompt,
                 messages=claude_message
             )
+
+            if conf().get("blender_mcp_enabled"):
+                return self._chat_with_blender_mcp(create_kwargs, session_id)
             
             if is_searching:
                 create_kwargs["tools"] = [
@@ -147,6 +153,173 @@ class ClaudeAIBot(Bot):
         except Exception as e:
             logger.error("[{}] fetch reply error, {}".format(self.Model_ID, e))
             return Reply(ReplyType.ERROR, f"[{self.Model_ID}] {e}")
+
+    def _chat_with_blender_mcp(self, create_kwargs, session_id):
+        """在一条 Claude 消息内执行完整的 MCP 工具调用循环。"""
+        try:
+            reply_content, output_tokens = asyncio.run(
+                self._run_blender_mcp_chat(create_kwargs)
+            )
+            self.sessions.session_reply(reply_content, session_id, output_tokens)
+            logger.info(
+                f"[{self.Model_ID}] Blender MCP reply={reply_content}, "
+                f"session_id={session_id}, tokens={output_tokens}"
+            )
+            return Reply(ReplyType.TEXT, reply_content)
+        except Exception as e:
+            logger.exception(f"[{self.Model_ID}] Blender MCP request failed: {e}")
+            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] Blender MCP 调用失败：{e}")
+
+    async def _run_blender_mcp_chat(self, create_kwargs):
+        """连接 stdio MCP Server，供 Claude 在本轮请求中按需调用 Blender 工具。"""
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError as e:
+            raise RuntimeError("缺少 MCP 客户端依赖，请执行 pip install -r requirements.txt") from e
+
+        command = conf().get("blender_mcp_command")
+        if not command:
+            raise ValueError("未配置 blender_mcp_command")
+
+        mcp_cwd = conf().get("blender_mcp_cwd") or None
+        configured_args = conf().get("blender_mcp_args") or ["-m", "blmcp"]
+
+        # 为避免 VSCode/外部调试器拦截子进程导致 -m blmcp 模块丢失，
+        # 在扩展根目录生成一个自包含 entrypoint 脚本，强制在 sys.path 首位注入 site-packages 与扩展根目录。
+        if mcp_cwd and configured_args == ["-m", "blmcp"]:
+            runner_script = os.path.join(mcp_cwd, "run_mcp_entrypoint.py")
+            try:
+                with open(runner_script, "w", encoding="utf-8") as f:
+                    f.write(
+                        "import os, sys\n"
+                        "from pathlib import Path\n"
+                        "here = Path(__file__).resolve().parent\n"
+                        "venv_site = here / '.venv' / 'Lib' / 'site-packages'\n"
+                        "if venv_site.exists():\n"
+                        "    sys.path.insert(0, str(venv_site))\n"
+                        "sys.path.insert(0, str(here))\n"
+                        "os.environ['PYDEVD_DISABLE_FILE_VALIDATION'] = '1'\n"
+                        "os.environ['PYDEVD_DONT_TRACE_CHILD_PROCESSES'] = '1'\n"
+                        "from blmcp import main\n"
+                        "if __name__ == '__main__':\n"
+                        "    sys.exit(main())\n"
+                    )
+                server_args = [runner_script]
+            except Exception as e:
+                logger.warning(f"[{self.Model_ID}] 写入 MCP entrypoint 失败，回退到默认参数: {e}")
+                server_args = configured_args
+        else:
+            server_args = configured_args
+
+        if mcp_cwd:
+            _venv_site = str(Path(conf().get("blender_mcp_command", "")).parent.parent / "Lib" / "site-packages")
+            server_env = {
+                "PYTHONPATH": _venv_site + os.pathsep + mcp_cwd,
+                "PYDEVD_DISABLE_FILE_VALIDATION": "1",
+                "PYDEVD_DONT_TRACE_CHILD_PROCESSES": "1",
+            }
+        else:
+            server_env = None
+
+        server_params = StdioServerParameters(
+            command=command,
+            args=server_args,
+            cwd=mcp_cwd,
+            env=server_env,
+        )
+        max_rounds = int(conf().get("blender_mcp_max_tool_rounds", 8))
+        messages = list(create_kwargs["messages"])
+        stderr_log_path = os.path.join(os.getcwd(), "logs", "blender_mcp_stderr.log")
+        os.makedirs(os.path.dirname(stderr_log_path), exist_ok=True)
+
+        logger.info(f"[{self.Model_ID}] Blender MCP stderr log: {stderr_log_path}")
+        with open(stderr_log_path, "a", encoding="utf-8") as stderr_log:
+            stderr_log.write("\n--- Blender MCP session started ---\n")
+            stderr_log.flush()
+            async with stdio_client(server_params, errlog=stderr_log) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as mcp_session:
+                    await mcp_session.initialize()
+                    tool_list = await mcp_session.list_tools()
+                    mcp_tools = {tool.name: tool for tool in tool_list.tools}
+                    if not mcp_tools:
+                        raise RuntimeError("Blender MCP Server 未返回任何工具")
+
+                    tool_definitions = [
+                        {
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "input_schema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
+                        }
+                        for tool in mcp_tools.values()
+                    ]
+
+                    for _ in range(max_rounds):
+                        response = self.client.messages.create(
+                            **dict(create_kwargs, messages=messages, tools=tool_definitions)
+                        )
+                        response_blocks = self._serialize_anthropic_blocks(response.content)
+                        tool_uses = [
+                            block for block in response_blocks
+                            if block.get("type") == "tool_use"
+                        ]
+                        if not tool_uses:
+                            return self._extract_claude_text(response_blocks), response.usage.output_tokens
+
+                        messages.append({"role": "assistant", "content": response_blocks})
+                        tool_results = []
+                        for tool_use in tool_uses:
+                            tool_name = tool_use["name"]
+                            if tool_name not in mcp_tools:
+                                tool_results.append({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use["id"],
+                                    "is_error": True,
+                                    "content": f"未知的 Blender MCP 工具：{tool_name}",
+                                })
+                                continue
+
+                            result = await mcp_session.call_tool(tool_name, tool_use.get("input", {}))
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use["id"],
+                                "is_error": bool(getattr(result, "is_error", getattr(result, "isError", False))),
+                                "content": self._serialize_mcp_result(result),
+                            })
+                        messages.append({"role": "user", "content": tool_results})
+
+        raise RuntimeError(f"Blender MCP 工具调用超过最大轮次（{max_rounds}）")
+
+    @staticmethod
+    def _serialize_anthropic_blocks(blocks):
+        return [
+            block.model_dump(exclude_none=True) if hasattr(block, "model_dump") else block
+            for block in blocks
+        ]
+
+    @staticmethod
+    def _serialize_mcp_result(result):
+        content = []
+        for block in getattr(result, "content", []) or []:
+            if hasattr(block, "model_dump"):
+                content.append(block.model_dump(exclude_none=True))
+            elif isinstance(block, dict):
+                content.append(block)
+            else:
+                content.append({"type": "text", "text": str(block)})
+        payload = {"content": content}
+        structured_content = getattr(result, "structured_content", getattr(result, "structuredContent", None))
+        if structured_content is not None:
+            payload["structured_content"] = structured_content
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _extract_claude_text(blocks):
+        text = "".join(
+            block.get("text", "") for block in blocks
+            if block.get("type") == "text"
+        )
+        return text or "Blender 操作已完成。"
         
     def _build_current_content(self, query: str, session_id: str) -> list:
         """

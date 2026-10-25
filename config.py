@@ -80,6 +80,12 @@ available_setting = {
     "anthropic_base_url": "",
     "anthropic_api_cookie": "",
     "anthropic_uuid": "",
+    # Blender MCP（通过 Claude Messages API 调用本地 stdio Server）
+    "blender_mcp_enabled": False,
+    "blender_mcp_command": "",
+    "blender_mcp_args": ["-m", "blmcp"],
+    "blender_mcp_cwd": "",
+    "blender_mcp_max_tool_rounds": 8,
     # 通义千问API, 获取方式查看文档 https://help.aliyun.com/document_detail/2587494.html
     "qwen_access_key_id": "",
     "qwen_access_key_secret": "",

@@ -30,6 +30,7 @@ PyJWT
 
 openai
 anthropic
+mcp
 
 # ElevenLabs is required when config.json sets text_to_voice=elevenlabs.
 elevenlabs==1.0.3
