@@ -272,7 +272,7 @@ class GoogleGeminiBot(Bot):
                                             type = Type.INTEGER,
                                             description = "段落所在的场号，包含正戏与彩蛋，彩蛋场号顺接正戏，比如正戏最后一场是95，彩蛋第一场就是96",
                                         ),
-                                        "enviroment": types.Schema(
+                                        "environment": types.Schema(
                                             type = Type.STRING,
                                             description = "段落发生的环境，大部分情况是内或外，内/外或外/内表明该场次同时包含了室内外的景，比如说车戏的时候，或者是门、窗内外的角色有互动的时候。如果场次标题中没有环境信息，根据段落内容进行推测。",
                                             enum = ["内", "外", "内/外", "外/内"],
