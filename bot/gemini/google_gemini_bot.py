@@ -256,7 +256,7 @@ class GoogleGeminiBot(Bot):
                     ),
                     "screenwriter": types.Schema(
                         type = Type.STRING,
-                        description = "从文档中提取出的剧本名称,如果没有，需要请用户提供",
+                        description = "从文档中提取出的编剧名字,如果没有，需要请用户提供",
                     ),
                     "paragraphs_metadata": types.Schema(
                         type = Type.ARRAY,
