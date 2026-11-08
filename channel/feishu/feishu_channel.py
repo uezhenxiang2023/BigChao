@@ -242,6 +242,14 @@ class FeiShuChanel(ChatChannel):
             model_state.toggle_video_model(open_id, const.KLING_V3_OMNI)
             self.send_text(f"[INFO]\n视频模型已切换为：{const.KLING_V3_OMNI}", open_id)
             logger.info(f'[Lark] switch video model to {const.KLING_V3_OMNI.upper()}, requester={open_id}')
+            if conf().get("kling_mcp_enabled"):
+                from bot.kling.kling_mcp_auth import trigger_kling_auth_if_needed
+                trigger_kling_auth_if_needed(
+                    notify_channel_fn=lambda url: self.send_text(
+                        f"【可灵 MCP 授权】检测到当前尚未连接可灵账号。\n已在电脑浏览器为您打开授权页面，或请在手机中点击链接完成授权：\n{url}",
+                        open_id
+                    )
+                )
         elif event_key == 'Veo':
             model_state.toggle_video_model(open_id, const.VEO_31)
             self.send_text(f"[INFO]\n视频模型已切换为：{const.VEO_31}", open_id)
@@ -643,6 +651,12 @@ class FeiShuChanel(ChatChannel):
             video_model_id = self._get_current_video_model_id(receiver)
             video_duration = reply.content[0]
             video_url = reply.content[1]
+            # Claude MCP 将最终说明文本作为 VIDEO_URL 的第三项携带。先发送它，
+            # 避免视频 Reply 覆盖原本应展示的 Claude 文本回复。
+            reply_text = reply.content[2] if len(reply.content) > 2 else ""
+            if reply_text and reply_text.strip():
+                self.send_text(reply_text, receiver)
+                logger.info("[Lark_%s] sendMsg=%s, receiver=%s", video_model_id, reply_text, receiver)
             file_name = self.extract_image_filename(video_url)
             logger.debug(f"[Lark_{video_model_id}] start download video, video_url={video_url}")
             video_res = requests.get(video_url, stream=True)

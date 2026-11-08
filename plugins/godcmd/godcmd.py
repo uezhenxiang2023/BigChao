@@ -519,6 +519,14 @@ class Godcmd(Plugin):
                         else:
                             model_state.toggle_video_model(user, args[0])
                             ok, result = True, "视频模型已切换为：" + args[0]
+                            if conf().get("kling_mcp_enabled") and (args[0] in const.KLING_VIDEO_LIST or args[0] == const.KLING_V3_OMNI):
+                                from bot.kling.kling_mcp_auth import trigger_kling_auth_if_needed
+                                channel = e_context.get("channel")
+                                context = e_context.get("context")
+                                def _notify(url):
+                                    if channel and context:
+                                        channel.send(Reply(ReplyType.TEXT, f"【可灵 MCP 授权】检测到尚未完成账号授权，已为您在电脑浏览器打开授权页面，或请在手机中点击链接完成授权：\n{url}"), context)
+                                trigger_kling_auth_if_needed(notify_channel_fn=_notify)
                     else:
                         ok, result = False, "请发送 #video_model 加模型名，或直接 #video_model 查看当前模型"
                 elif cmd == "video_mode":

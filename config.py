@@ -86,6 +86,10 @@ available_setting = {
     "blender_mcp_args": ["-m", "blmcp"],
     "blender_mcp_cwd": "",
     "blender_mcp_max_tool_rounds": 8,
+    # 可灵 MCP（通过 Streamable HTTP 调用官方 https://klingai.com/mcp 服务）
+    "kling_mcp_enabled": False,
+    "kling_mcp_server_url": "https://klingai.com/mcp",
+    "kling_mcp_redirect_port": 3344,
     # 通义千问API, 获取方式查看文档 https://help.aliyun.com/document_detail/2587494.html
     "qwen_access_key_id": "",
     "qwen_access_key_secret": "",

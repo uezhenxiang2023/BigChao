@@ -407,6 +407,16 @@ class TelegramChannel(ChatChannel):
                 return
             target_model = self._MEDIA_MODEL_DICT[target_button]
             model_state.toggle_video_model(chat_id, target_model)
+            if conf().get("kling_mcp_enabled") and (target_model in const.KLING_VIDEO_LIST or target_model == const.KLING_V3_OMNI):
+                from bot.kling.kling_mcp_auth import trigger_kling_auth_if_needed
+                trigger_kling_auth_if_needed(
+                    notify_channel_fn=lambda url: asyncio.create_task(
+                        context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"【可灵 MCP 授权】检测到尚未完成可灵账号授权，已为您打开授权页面，或请点击链接完成授权：\n{url}"
+                        )
+                    )
+                )
             text = self._build_video_model_menu_text(target_model)
             await query.answer(f"Video model: {target_model}")
             try:
