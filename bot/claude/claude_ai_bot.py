@@ -14,6 +14,7 @@ from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
 from common import memory
+from common.media_store import build_public_media_url
 from config import conf
 
 from common.tool_button import tool_state
@@ -82,7 +83,7 @@ class ClaudeAIBot(Bot):
             
             # 从 session 获取完整消息历史
             session = self.sessions.build_session(session_id)
-            claude_message = session.messages
+            claude_message = self._sanitize_claude_session_messages(session.messages)
 
             # 判断联网搜索状态
             is_searching = tool_state.get_search_state(session_id)
@@ -112,7 +113,12 @@ class ClaudeAIBot(Bot):
                     "必须持续轮询 query_tasks 直到获取到最终文件 URL。"
                     "如果 query_tasks 返回任务仍在处理中（status 为 submitted/processing/running），"
                     "你应继续再次调用 query_tasks 进行轮询。\n"
-                    "6. 拿到最终视频/图片 URL 后，将 URL 包含在你的回复文本中，以便系统自动提取并下发给用户。"
+                    "6. 拿到最终视频/图片 URL 后，将 URL 包含在你的回复文本中，以便系统自动提取并下发给用户。\n"
+                    "7. 用户上传或连续发送的参考图会在消息中附带“可灵公网图片地址”。图生视频或多图参考时，"
+                    "必须将这些地址直接填入相应 Kling 工具的图片 URL 参数，绝不能要求用户再次提供 http/https 链接。\n"
+                    "8. 用户上传或引用的视频会在消息中附带“可灵公网视频地址”。需要基于该视频进行动作控制、"
+                    "视频参考或视频编辑时，必须将此地址直接填入 motion_control、omni_ref_video 或其他对应 Kling 工具的"
+                    "视频 URL 参数；绝不能忽略该地址或要求用户再次提供链接。"
                 )
 
             create_kwargs = dict(
@@ -200,23 +206,12 @@ class ClaudeAIBot(Bot):
                 f"session_id={session_id}, tokens={output_tokens}"
             )
 
-            # 如果检测到生成了可灵视频，优先注入当前 session 上下文，并作为视频回复下发
+            # 如果检测到生成了可灵视频，作为视频回复下发。
+            # session_reply 已保存本轮文本；不要调用通用 session_inject_media：其
+            # video_url/image_url 块属于其他模型的格式，Claude Messages API 不接受。
             if video_info and video_info.get("video_url"):
                 video_url = video_info["video_url"]
                 duration = video_info.get("duration", 5)
-                try:
-                    from common.utils import url_to_base64
-                    base64_data = url_to_base64(video_url)
-                    self.sessions.session_inject_media(
-                        session_id=session_id,
-                        media_type="video",
-                        data=base64_data,
-                        source_model="kling-mcp",
-                        remote_url=video_url
-                    )
-                    logger.info(f"[{self.Model_ID}] Kling MCP 视频已注入 session={session_id}")
-                except Exception as e:
-                    logger.warning(f"[{self.Model_ID}] 注入视频至 session 异常: {e}")
 
                 # VIDEO_URL 是单一 Reply 类型，不能同时再返回一个 TEXT Reply。
                 # 把 Claude 的最终文本随视频一并带到 channel，由支持的通道先发送文本、
@@ -240,6 +235,9 @@ class ClaudeAIBot(Bot):
 
         max_rounds = int(conf().get("blender_mcp_max_tool_rounds", 20))
         messages = list(create_kwargs["messages"])
+        # 用户可能先连续上传参考图、再通过下一条文字确认调用工具；倒序找到
+        # 最近一条带“可灵公网图片地址”的用户消息，避免校验只看当前末条而漏掉参考图。
+        kling_reference_urls = self._extract_kling_reference_urls(messages)
 
         async with contextlib.AsyncExitStack() as stack:
             # mcp_tools: tool_name -> (session, is_kling)
@@ -434,6 +432,36 @@ class ClaudeAIBot(Bot):
 
                     target_session, is_kling = mcp_tools[tool_name]
 
+                    # omni_ref_video 是多图全能参考入口。Claude 偶尔会只把部分
+                    # 参考图填入工具参数；此时不要让可灵提交一个错误的任务，而是把
+                    # 缺失信息作为 tool_result 返给 Claude，促使它补齐后重试。
+                    if is_kling and tool_name == "omni_ref_video" and len(kling_reference_urls) > 1:
+                        submitted_urls = self._extract_http_urls(tool_use.get("input", {}))
+                        missing_urls = [url for url in kling_reference_urls if url not in submitted_urls]
+                        logger.info(
+                            "[%s] Kling omni_ref_video reference URLs: expected=%s, submitted=%s",
+                            self.Model_ID,
+                            len(kling_reference_urls),
+                            len(submitted_urls),
+                        )
+                        if missing_urls:
+                            logger.warning(
+                                "[%s] reject incomplete omni_ref_video references: missing=%s",
+                                self.Model_ID,
+                                len(missing_urls),
+                            )
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use["id"],
+                                "is_error": True,
+                                "content": (
+                                    "本轮收到 %s 张用户参考图，但 omni_ref_video 工具参数只包含 %s 张。"
+                                    "请重新调用 omni_ref_video，并将每一张“可灵公网图片地址”全部原样填入"
+                                    "多图参考参数后再提交。"
+                                ) % (len(kling_reference_urls), len(kling_reference_urls) - len(missing_urls)),
+                            })
+                            continue
+
                     # 对可灵 query_tasks 轮询请求，加入等待间隔（视频生成需要 1-3+ 分钟）
                     if is_kling and tool_name == "query_tasks":
                         poll_interval = 15  # 秒
@@ -454,18 +482,31 @@ class ClaudeAIBot(Bot):
                             }
                             logger.info(f"[{self.Model_ID}] 捕获到可灵生成视频: {video_url}")
 
-                        # 追踪 text_to_video 等生成类工具返回的 generationId
-                        if tool_name in ("text_to_video", "image_to_video", "text_to_image") and not video_url:
-                            import re as _re
-                            gen_match = _re.search(r'generationId["\s:]+["\']?([A-Za-z0-9_-]{10,})', serialized_res)
-                            if gen_match:
-                                _kling_pending_generation_id = gen_match.group(1)
+                        # 追踪全部可灵异步生成工具（全能参考 omni_ref_video 也会异步返回任务 ID）。
+                        if tool_name in (
+                            "text_to_video", "image_to_video", "omni_ref_video",
+                            "motion_control", "text_to_image", "image_to_image",
+                        ) and not video_url:
+                            generation_id = self._extract_kling_generation_id(serialized_res)
+                            if generation_id:
+                                _kling_pending_generation_id = generation_id
                                 _kling_generation_duration = tool_use.get("input", {}).get("duration", 5)
                                 logger.info(f"[{self.Model_ID}] 追踪到可灵异步任务 generationId={_kling_pending_generation_id}")
 
                         # 记录 query_tasks 的参数，以便代码层强制轮询时复用
                         if tool_name == "query_tasks":
                             _kling_last_query_args = tool_use.get("input", {})
+                            # 即使生成工具响应格式变化无法解析，也能从 Claude 发出的
+                            # query_tasks 入参恢复任务 ID，保证 Claude 提前结束时可接管轮询。
+                            if not video_url and not _kling_pending_generation_id:
+                                _kling_pending_generation_id = self._extract_kling_generation_id(
+                                    _kling_last_query_args
+                                )
+                                if _kling_pending_generation_id:
+                                    logger.info(
+                                        f"[{self.Model_ID}] 从 query_tasks 入参恢复可灵任务 "
+                                        f"generationId={_kling_pending_generation_id}"
+                                    )
                             # 如果 query_tasks 返回了视频，清除 pending 标记
                             if video_url:
                                 _kling_pending_generation_id = None
@@ -481,23 +522,109 @@ class ClaudeAIBot(Bot):
         raise RuntimeError(f"MCP 工具调用超过最大轮次（{max_rounds}）")
 
     @staticmethod
+    def _extract_kling_generation_id(value):
+        """从可灵 MCP 返回值或 query_tasks 入参提取异步任务 ID。"""
+        if isinstance(value, dict):
+            for key in (
+                "generationId", "generation_id", "generationIds", "generation_ids",
+                "taskId", "task_id", "taskIds", "task_ids",
+            ):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and len(candidate) >= 10:
+                    return candidate
+                if isinstance(candidate, (list, tuple)):
+                    nested_candidate = ClaudeAIBot._extract_kling_generation_id(candidate)
+                    if nested_candidate:
+                        return nested_candidate
+            for child in value.values():
+                candidate = ClaudeAIBot._extract_kling_generation_id(child)
+                if candidate:
+                    return candidate
+            return None
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                candidate = ClaudeAIBot._extract_kling_generation_id(child)
+                if candidate:
+                    return candidate
+            return None
+        if isinstance(value, str):
+            if re.fullmatch(r"[A-Za-z0-9_-]{10,}", value):
+                return value
+            match = re.search(
+                r'(?:generationIds?|generation_ids?|taskIds?|task_ids?|任务ID)["\s:：`]*["`]?([A-Za-z0-9_-]{10,})',
+                value,
+            )
+            return match.group(1) if match else None
+        return None
+
+    @staticmethod
+    def _extract_kling_reference_urls(message_or_messages):
+        """提取最近一组用户消息中注入的可灵公网参考图地址。"""
+        messages = message_or_messages if isinstance(message_or_messages, list) else [message_or_messages]
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content", [])
+            if not isinstance(content, list):
+                continue
+            urls = []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                text = block.get("text", "")
+                if not isinstance(text, str) or "可灵公网图片地址" not in text:
+                    continue
+                match = re.search(r"可灵公网图片地址：([^\s。]+)", text)
+                if match and match.group(1) not in urls:
+                    urls.append(match.group(1))
+            if urls:
+                return urls
+        return []
+
+    @staticmethod
+    def _extract_http_urls(value):
+        """递归收集工具入参中的 http(s) URL，用于校验多图参考是否完整。"""
+        if isinstance(value, dict):
+            urls = []
+            for child in value.values():
+                urls.extend(ClaudeAIBot._extract_http_urls(child))
+            return urls
+        if isinstance(value, (list, tuple)):
+            urls = []
+            for child in value:
+                urls.extend(ClaudeAIBot._extract_http_urls(child))
+            return urls
+        if isinstance(value, str):
+            return re.findall(r"https?://[^\s\"'\]})]+", value)
+        return []
+
+    @staticmethod
     def _strip_kling_media_links(reply_content):
         """移除可灵结果文本中的原始视频/封面链接，视频仍由通道单独下发。"""
         if not isinstance(reply_content, str):
             return reply_content
 
-        # 可灵通常以“视频地址（无水印版）”或“封面图”单独成行，链接紧随其后。
+        # 可灵可能使用“视频地址（无水印版）”“成片地址（带水印）”“无水印版”
+        # 或“封面”等不同标签，链接紧随其后。
         # 逐行处理可避免超长签名 URL 或括号格式影响后续正常文案。
+        media_label_pattern = (
+            r"(?:"
+            r"视频地址(?:\s*[（(][^)）]*[)）])?"
+            r"|成片(?:链接|地址)?(?:\s*[（(][^)）]*[)）])?"
+            r"|无水印(?:版|视频|地址|链接)?(?:\s*[（(][^)）]*[)）])?"
+            r"|封面(?:图|链接|地址)?(?:\s*[（(][^)）]*[)）])?"
+            r")"
+        )
         cleaned_lines = []
         skip_next_link = False
         for line in reply_content.splitlines():
             if re.match(
-                r"^\s*(?:视频地址\s*[（(].*[)）]|封面图)\s*[:：]\s*"
+                rf"^\s*{media_label_pattern}\s*[:：]\s*"
                 r"(?:https?://\S+|\[[^\]]*\]\(https?://[^)]+\))\s*$",
                 line,
             ):
                 continue
-            if re.match(r"^\s*(?:视频地址\s*[（(].*[)）]|封面图)\s*[:：]\s*$", line):
+            if re.match(rf"^\s*{media_label_pattern}\s*[:：]\s*$", line):
                 skip_next_link = True
                 continue
             if skip_next_link:
@@ -519,6 +646,58 @@ class ClaudeAIBot(Bot):
             block.model_dump(exclude_none=True) if hasattr(block, "model_dump") else block
             for block in blocks
         ]
+
+    @staticmethod
+    def _sanitize_claude_session_messages(messages):
+        """将历史媒体转换为 Claude Messages API 支持的格式，避免后续请求被 400 拒绝。"""
+        converted_image_count = 0
+        converted_video_count = 0
+        for message in messages:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            sanitized_content = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    data_url = block.get("image_url", {}).get("url", "")
+                    data_url_match = re.fullmatch(
+                        r"data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)",
+                        data_url,
+                    )
+                    if data_url_match:
+                        sanitized_content.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": data_url_match.group(1),
+                                "data": data_url_match.group(2),
+                            },
+                        })
+                        converted_image_count += 1
+                    else:
+                        sanitized_content.append({
+                            "type": "text",
+                            "text": "[历史图片已生成并发送给用户]",
+                        })
+                        converted_image_count += 1
+                elif isinstance(block, dict) and block.get("type") == "video_url":
+                    # Claude Messages API 目前没有 video_url 输入块。保留视频已生成的
+                    # 上下文提示，避免把 OpenAI 风格的块直接传给 Claude 导致 400。
+                    sanitized_content.append({
+                        "type": "text",
+                        "text": "[历史视频已生成并发送给用户]",
+                    })
+                    converted_video_count += 1
+                else:
+                    sanitized_content.append(block)
+            message["content"] = sanitized_content
+        if converted_image_count or converted_video_count:
+            logger.info(
+                "[Claude] normalized historical media: images=%s, videos_as_text=%s",
+                converted_image_count,
+                converted_video_count,
+            )
+        return messages
 
     @staticmethod
     def _serialize_mcp_result(result):
@@ -553,7 +732,8 @@ class ClaudeAIBot(Bot):
 
         image_cache = memory.USER_IMAGE_CACHE.get(session_id)
         if image_cache:
-            for cached_file in image_cache.get("files", []):
+            image_paths = image_cache.get("path", [])
+            for image_index, cached_file in enumerate(image_cache.get("files", []), start=1):
                 data_type = type(cached_file).__name__
 
                 if data_type in ("JpegImageFile", "PngImageFile", "Image"):
@@ -580,12 +760,52 @@ class ClaudeAIBot(Bot):
                             }
                         })
                         logger.debug(f"[{self.Model_ID}] image block added, format={fmt}")
+
+                        # 可灵 MCP 的图生视频工具需要由服务端可访问的 http(s) URL，
+                        # 不能使用发给 Claude 识图的 base64 数据。项目已有的本地媒体
+                        # 服务会将 tmp 文件通过 media_public_base_url（例如 ngrok）公开。
+                        image_path = image_paths[image_index - 1] if image_index <= len(image_paths) else None
+                        public_url = build_public_media_url(image_path) if image_path else None
+                        if public_url:
+                            current_content.append({
+                                "type": "text",
+                                "text": (
+                                    f"[参考图 {image_index} 的可灵公网图片地址：{public_url}。"
+                                    "若调用 Kling 的 image_to_video、omni_ref_video 或其他需要图片 URL 的工具，"
+                                    "请直接使用此地址，勿要求用户再次提供链接。]"
+                                ),
+                            })
+                            logger.info(
+                                "[%s] Kling reference image %s public_url=%s",
+                                self.Model_ID,
+                                image_index,
+                                public_url,
+                            )
+                        else:
+                            logger.warning(
+                                "[%s] could not build public URL for Kling reference image: %s",
+                                self.Model_ID,
+                                image_path,
+                            )
                     except Exception as e:
                         logger.error(f"[{self.Model_ID}] failed to encode image: {e}")
                 else:
                     logger.warning(f"[{self.Model_ID}] unsupported cached image type: {data_type}")
 
             memory.USER_IMAGE_CACHE.pop(session_id)
+
+        # Claude 的消息 API 不直接接收本地视频文件；可灵工具则需要服务端能访问的
+        # http(s) 地址。飞书通道已将上传/引用视频缓存为 path + public_url，在此统一
+        # 注入公网地址，供模型直接传给 Kling 的视频输入参数。
+        video_cache = memory.USER_VIDEO_CACHE.get(session_id)
+        self._append_kling_video_references(current_content, video_cache, "参考视频")
+        if video_cache:
+            memory.USER_VIDEO_CACHE.pop(session_id, None)
+
+        quoted_video_cache = memory.USER_QUOTED_VIDEO_CACHE.get(session_id)
+        self._append_kling_video_references(current_content, quoted_video_cache, "引用视频")
+        if quoted_video_cache:
+            memory.USER_QUOTED_VIDEO_CACHE.pop(session_id, None)
 
         file_cache = memory.USER_FILE_CACHE.get(session_id)
         if file_cache:
@@ -622,6 +842,47 @@ class ClaudeAIBot(Bot):
         })
 
         return current_content
+
+    def _append_kling_video_references(self, current_content: list, video_cache, label: str):
+        """将飞书上传或引用的视频公网地址作为文本块提供给 Claude/Kling。"""
+        if not video_cache:
+            return
+
+        for video_index, cached_file in enumerate(video_cache.get("files", []), start=1):
+            if not isinstance(cached_file, dict):
+                logger.warning(
+                    "[%s] unsupported cached video type: %s",
+                    getattr(self, "Model_ID", "CLAUDE"),
+                    type(cached_file).__name__,
+                )
+                continue
+
+            video_path = cached_file.get("path")
+            public_url = cached_file.get("public_url") or build_public_media_url(video_path)
+            if not public_url:
+                logger.warning(
+                    "[%s] could not build public URL for Kling %s: %s",
+                    getattr(self, "Model_ID", "CLAUDE"),
+                    label,
+                    video_path,
+                )
+                continue
+
+            current_content.append({
+                "type": "text",
+                "text": (
+                    f"[{label} {video_index} 的可灵公网视频地址：{public_url}。"
+                    "若调用 Kling 的 motion_control、omni_ref_video 或其他需要视频 URL 的工具，"
+                    "请直接使用此地址，勿要求用户再次提供链接。]"
+                ),
+            })
+            logger.info(
+                "[%s] Kling %s %s public_url=%s",
+                getattr(self, "Model_ID", "CLAUDE"),
+                label,
+                video_index,
+                public_url,
+            )
 
     def _build_pdf_document_block(self, file_path: str, raw_data: str):
         file_size = os.path.getsize(file_path) if file_path and os.path.exists(file_path) else 0

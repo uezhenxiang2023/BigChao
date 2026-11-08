@@ -8,8 +8,10 @@
 # -*- coding=utf-8 -*-
 import cv2
 import io, json, os, uuid, requests, threading, re, time
+import mimetypes
 from io import BytesIO
 from flask import Flask, send_file, abort
+from PIL import Image as PILImage
 from urllib.parse import urlparse, quote
 
 from channel.feishu.feishu_message import FeishuMessage
@@ -990,7 +992,16 @@ class FeiShuChanel(ChatChannel):
             abort(403)
         if not os.path.exists(target_path):
             abort(404)
-        return send_file(target_path, conditional=True)
+        mimetype, _ = mimetypes.guess_type(target_path)
+        if not mimetype:
+            # 飞书下载的原图通常没有扩展名。按文件真实格式返回 MIME，
+            # 以便 Kling 等远端服务可将公网 URL 识别为图片而非通用二进制。
+            try:
+                with PILImage.open(target_path) as image:
+                    mimetype = PILImage.MIME.get(image.format)
+            except Exception:
+                pass
+        return send_file(target_path, conditional=True, mimetype=mimetype)
 
     def build_public_media_url(self, file_path):
         return build_public_media_url(file_path)
