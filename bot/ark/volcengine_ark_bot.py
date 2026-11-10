@@ -9,7 +9,7 @@ import json
 import os
 import time
 
-from volcenginesdkarkruntime import Ark
+from arkruntime import Ark
 
 from bot.ark.ark_error import (
     format_ark_api_error,
@@ -45,7 +45,8 @@ class VolcengineArkBot(Bot):
         self.sessions = _ark_sessions
 
         self.client = Ark(
-            api_key=self.api_key
+            api_key=self.api_key,
+            base_url="https://ark.cn-beijing.volces.com/api/v3"
         )
 
     def reply(self, query, context: Context = None) -> Reply:

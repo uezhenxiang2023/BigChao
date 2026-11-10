@@ -12,6 +12,7 @@ requests
 
 # Current chat/image/video providers used by Feishu
 volcengine-python-sdk
+arkruntime
 tos
 xai-sdk
 google-genai
