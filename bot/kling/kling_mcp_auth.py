@@ -105,6 +105,8 @@ class KlingOAuthManager:
         self.storage = KlingTokenFileStorage(self.storage_path)
         self.latest_auth_url: Optional[str] = None
         self._auth_notify_callback: Optional[Callable[[str], None]] = None
+        self._interactive_auth_requested = False
+        self._open_browser_on_auth = True
 
         self._pending_future: Optional[asyncio.Future] = None
         self._server: Optional[asyncio.Server] = None
@@ -114,7 +116,7 @@ class KlingOAuthManager:
         """检查本地是否已有有效 Token"""
         return self.storage.has_valid_tokens_sync()
 
-    def set_auth_notify_callback(self, callback: Callable[[str], None]):
+    def set_auth_notify_callback(self, callback: Optional[Callable[[str], None]]):
         """设置接收授权链接的通知回调（如向当前会话下发卡片/链接）"""
         self._auth_notify_callback = callback
 
@@ -138,6 +140,9 @@ class KlingOAuthManager:
 
     async def _redirect_handler(self, auth_url: str):
         """当 MCP 鉴权流程触发重定向时被调用"""
+        if not self._interactive_auth_requested:
+            raise RuntimeError("可灵 MCP 尚未授权，请点击飞书视频模型菜单中的 Kling 发起授权。")
+
         self.latest_auth_url = auth_url
         logger.info(
             f"\n"
@@ -153,11 +158,11 @@ class KlingOAuthManager:
             except Exception as e:
                 logger.warning(f"[KlingOAuth] 触发外部通知回调异常: {e}")
 
-        # 尝试自动在桌面浏览器中打开
-        try:
-            webbrowser.open(auth_url)
-        except Exception:
-            pass
+        if self._open_browser_on_auth:
+            try:
+                webbrowser.open(auth_url)
+            except Exception as e:
+                logger.warning(f"[KlingOAuth] 打开授权页面失败: {e}")
 
     async def _callback_handler(self) -> AuthorizationCodeResult:
         """启动本地 loopback http 服务等待可灵重定向返回 code"""
@@ -271,20 +276,27 @@ def get_kling_oauth_manager() -> KlingOAuthManager:
     return _default_oauth_manager
 
 
-def trigger_kling_auth_if_needed(notify_channel_fn: Optional[Callable[[str], None]] = None) -> bool:
+def trigger_kling_auth_if_needed(
+    notify_channel_fn: Optional[Callable[[str], None]] = None,
+    open_browser: bool = True,
+    force: bool = False,
+) -> bool:
     """
     当用户通过菜单或 #video_model 命令切换至可灵视频模型时调用此函数。
-    若本地尚未授权，将在后台线程中发起一次轻量请求触发 OAuth 鉴权流程，
-    并自动通过 notify_channel_fn 发送授权链接及打开浏览器。
-    返回 True 表示已触发授权流程，False 表示已拥有有效 Token。
+    force=True 时，即使已有 Token 也会通过 MCP 握手验证/刷新。
+    返回 True 表示已启动授权握手，False 表示已有流程进行中或无需启动。
     """
     manager = get_kling_oauth_manager()
-    if manager.has_valid_tokens():
+    if manager._interactive_auth_requested:
+        logger.info("[KlingOAuth] 可灵 OAuth 授权流程已在进行中")
+        return False
+    if manager.has_valid_tokens() and not force:
         logger.info("[KlingOAuth] 可灵 MCP 已授权，无需重新触发鉴权")
         return False
 
-    if notify_channel_fn:
-        manager.set_auth_notify_callback(notify_channel_fn)
+    manager.set_auth_notify_callback(notify_channel_fn)
+    manager._interactive_auth_requested = True
+    manager._open_browser_on_auth = open_browser
 
     import threading
 
@@ -300,6 +312,9 @@ def trigger_kling_auth_if_needed(notify_channel_fn: Optional[Callable[[str], Non
         except Exception as e:
             logger.warning(f"[KlingOAuth] 显式授权握手流程结束或异常: {e}")
         finally:
+            manager._interactive_auth_requested = False
+            manager._auth_notify_callback = None
+            manager._open_browser_on_auth = True
             loop.close()
 
     thread = threading.Thread(target=_worker, name="kling-oauth-worker", daemon=True)

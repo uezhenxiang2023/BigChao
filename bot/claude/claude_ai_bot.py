@@ -216,7 +216,9 @@ class ClaudeAIBot(Bot):
                 # VIDEO_URL 是单一 Reply 类型，不能同时再返回一个 TEXT Reply。
                 # 把 Claude 的最终文本随视频一并带到 channel，由支持的通道先发送文本、
                 # 再发送视频；保留前两个元素以兼容既有 VIDEO_URL 消费者。
-                clean_reply_content = self._strip_kling_media_links(reply_content)
+                from bot.kling.kling_mcp_client import KlingMCPClient
+
+                clean_reply_content = KlingMCPClient.strip_media_links(reply_content)
                 return Reply(ReplyType.VIDEO_URL, (duration, video_url, clean_reply_content))
 
             return Reply(ReplyType.TEXT, reply_content)
@@ -235,9 +237,7 @@ class ClaudeAIBot(Bot):
 
         max_rounds = int(conf().get("blender_mcp_max_tool_rounds", 20))
         messages = list(create_kwargs["messages"])
-        # 用户可能先连续上传参考图、再通过下一条文字确认调用工具；倒序找到
-        # 最近一条带“可灵公网图片地址”的用户消息，避免校验只看当前末条而漏掉参考图。
-        kling_reference_urls = self._extract_kling_reference_urls(messages)
+        kling_reference_urls = []
 
         async with contextlib.AsyncExitStack() as stack:
             # mcp_tools: tool_name -> (session, is_kling)
@@ -319,32 +319,20 @@ class ClaudeAIBot(Bot):
             from bot.kling.kling_mcp_auth import get_kling_oauth_manager
             if conf().get("kling_mcp_enabled") and get_kling_oauth_manager().has_valid_tokens():
                 try:
-                    import httpx2
-                    from mcp.client.streamable_http import streamable_http_client
-                    from bot.kling.kling_mcp_auth import get_kling_oauth_manager
+                    from bot.kling.kling_mcp_client import KlingMCPClient
 
-                    kling_oauth = get_kling_oauth_manager()
-                    kling_provider = kling_oauth.get_auth_provider()
-                    server_url = conf().get("kling_mcp_server_url") or "https://klingai.com/mcp"
-
-                    timeout = httpx2.Timeout(connect=20.0, read=360.0, write=60.0, pool=360.0)
-                    kling_http = await stack.enter_async_context(
-                        httpx2.AsyncClient(auth=kling_provider, timeout=timeout)
+                    # 用户可能先发参考图、再确认生成，因此从最近的历史消息提取图片地址。
+                    kling_reference_urls = KlingMCPClient.extract_reference_urls(messages)
+                    kling_client = KlingMCPClient()
+                    kling_connection = await stack.enter_async_context(kling_client.connect())
+                    kling_tools = kling_connection.tool_definitions()
+                    for tool in kling_tools:
+                        mcp_tools[tool["name"]] = (kling_connection, True)
+                    tool_definitions.extend(kling_tools)
+                    logger.info(
+                        f"[{self.Model_ID}] Kling MCP 已连接并载入工具: "
+                        f"{[tool['name'] for tool in kling_tools]}"
                     )
-                    k_read, k_write = await stack.enter_async_context(
-                        streamable_http_client(server_url, http_client=kling_http)
-                    )
-                    kling_session = await stack.enter_async_context(ClientSession(k_read, k_write))
-                    await kling_session.initialize()
-                    kling_tool_list = await kling_session.list_tools()
-                    for tool in kling_tool_list.tools:
-                        mcp_tools[tool.name] = (kling_session, True)
-                        tool_definitions.append({
-                            "name": tool.name,
-                            "description": tool.description or "",
-                            "input_schema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
-                        })
-                    logger.info(f"[{self.Model_ID}] Kling MCP 已连接并载入工具: {[t.name for t in kling_tool_list.tools]}")
                 except Exception as e:
                     logger.exception(f"[{self.Model_ID}] 初始化 Kling MCP 失败: {e}")
                     raise RuntimeError(f"可灵 MCP 服务连接失败：{e}")
@@ -379,39 +367,11 @@ class ClaudeAIBot(Bot):
                         final_text = self._extract_claude_text(response_blocks)
                         output_tokens = response.usage.output_tokens
 
-                        target_session, _ = mcp_tools["query_tasks"]
-                        poll_args = _kling_last_query_args or {"generationId": _kling_pending_generation_id}
-                        max_code_polls = 24  # 最多轮询 24 次 × 15 秒 = 6 分钟
-                        for poll_i in range(max_code_polls):
-                            await asyncio.sleep(15)
-                            logger.info(
-                                f"[{self.Model_ID}] 代码层强制轮询 query_tasks "
-                                f"({poll_i + 1}/{max_code_polls}), args={poll_args}"
-                            )
-                            try:
-                                poll_result = await target_session.call_tool("query_tasks", poll_args)
-                                poll_text = self._serialize_mcp_result(poll_result)
-                                logger.debug(f"[{self.Model_ID}] query_tasks 返回: {poll_text[:500]}")
-
-                                from bot.kling.kling_mcp_client import KlingMCPClient
-                                video_url, cover_url = KlingMCPClient.extract_video_info(poll_text)
-                                if video_url:
-                                    captured_video = {
-                                        "video_url": video_url,
-                                        "cover_url": cover_url,
-                                        "duration": _kling_generation_duration,
-                                    }
-                                    logger.info(f"[{self.Model_ID}] 代码层轮询捕获到可灵视频: {video_url}")
-                                    break
-
-                                # 检查是否明确失败
-                                poll_lower = poll_text.lower()
-                                if any(s in poll_lower for s in ['"failed"', '"error"', '"cancelled"', '"timeout"']):
-                                    logger.warning(f"[{self.Model_ID}] 可灵任务失败: {poll_text[:300]}")
-                                    break
-                            except Exception as poll_e:
-                                logger.warning(f"[{self.Model_ID}] 代码层轮询异常: {poll_e}")
-                                break
+                        target_connection, _ = mcp_tools["query_tasks"]
+                        captured_video = await target_connection.poll_task(
+                            _kling_pending_generation_id,
+                            duration=_kling_generation_duration,
+                        )
 
                         return final_text, output_tokens, captured_video
                     else:
@@ -436,8 +396,10 @@ class ClaudeAIBot(Bot):
                     # 参考图填入工具参数；此时不要让可灵提交一个错误的任务，而是把
                     # 缺失信息作为 tool_result 返给 Claude，促使它补齐后重试。
                     if is_kling and tool_name == "omni_ref_video" and len(kling_reference_urls) > 1:
-                        submitted_urls = self._extract_http_urls(tool_use.get("input", {}))
-                        missing_urls = [url for url in kling_reference_urls if url not in submitted_urls]
+                        missing_urls = KlingMCPClient.missing_reference_urls(
+                            tool_use.get("input", {}),
+                            kling_reference_urls,
+                        )
                         logger.info(
                             "[%s] Kling omni_ref_video reference URLs: expected=%s, submitted=%s",
                             self.Model_ID,
@@ -469,10 +431,13 @@ class ClaudeAIBot(Bot):
                         await asyncio.sleep(poll_interval)
 
                     result = await target_session.call_tool(tool_name, tool_use.get("input", {}))
-                    serialized_res = self._serialize_mcp_result(result)
+                    serialized_res = (
+                        KlingMCPClient.serialize_result(result)
+                        if is_kling
+                        else self._serialize_mcp_result(result)
+                    )
 
                     if is_kling:
-                        from bot.kling.kling_mcp_client import KlingMCPClient
                         video_url, cover_url = KlingMCPClient.extract_video_info(serialized_res)
                         if video_url:
                             captured_video = {
@@ -487,7 +452,7 @@ class ClaudeAIBot(Bot):
                             "text_to_video", "image_to_video", "omni_ref_video",
                             "motion_control", "text_to_image", "image_to_image",
                         ) and not video_url:
-                            generation_id = self._extract_kling_generation_id(serialized_res)
+                            generation_id = KlingMCPClient.extract_generation_id(serialized_res)
                             if generation_id:
                                 _kling_pending_generation_id = generation_id
                                 _kling_generation_duration = tool_use.get("input", {}).get("duration", 5)
@@ -499,7 +464,7 @@ class ClaudeAIBot(Bot):
                             # 即使生成工具响应格式变化无法解析，也能从 Claude 发出的
                             # query_tasks 入参恢复任务 ID，保证 Claude 提前结束时可接管轮询。
                             if not video_url and not _kling_pending_generation_id:
-                                _kling_pending_generation_id = self._extract_kling_generation_id(
+                                _kling_pending_generation_id = KlingMCPClient.extract_generation_id(
                                     _kling_last_query_args
                                 )
                                 if _kling_pending_generation_id:
@@ -520,125 +485,6 @@ class ClaudeAIBot(Bot):
                 messages.append({"role": "user", "content": tool_results})
 
         raise RuntimeError(f"MCP 工具调用超过最大轮次（{max_rounds}）")
-
-    @staticmethod
-    def _extract_kling_generation_id(value):
-        """从可灵 MCP 返回值或 query_tasks 入参提取异步任务 ID。"""
-        if isinstance(value, dict):
-            for key in (
-                "generationId", "generation_id", "generationIds", "generation_ids",
-                "taskId", "task_id", "taskIds", "task_ids",
-            ):
-                candidate = value.get(key)
-                if isinstance(candidate, str) and len(candidate) >= 10:
-                    return candidate
-                if isinstance(candidate, (list, tuple)):
-                    nested_candidate = ClaudeAIBot._extract_kling_generation_id(candidate)
-                    if nested_candidate:
-                        return nested_candidate
-            for child in value.values():
-                candidate = ClaudeAIBot._extract_kling_generation_id(child)
-                if candidate:
-                    return candidate
-            return None
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                candidate = ClaudeAIBot._extract_kling_generation_id(child)
-                if candidate:
-                    return candidate
-            return None
-        if isinstance(value, str):
-            if re.fullmatch(r"[A-Za-z0-9_-]{10,}", value):
-                return value
-            match = re.search(
-                r'(?:generationIds?|generation_ids?|taskIds?|task_ids?|任务ID)["\s:：`]*["`]?([A-Za-z0-9_-]{10,})',
-                value,
-            )
-            return match.group(1) if match else None
-        return None
-
-    @staticmethod
-    def _extract_kling_reference_urls(message_or_messages):
-        """提取最近一组用户消息中注入的可灵公网参考图地址。"""
-        messages = message_or_messages if isinstance(message_or_messages, list) else [message_or_messages]
-        for message in reversed(messages):
-            if not isinstance(message, dict) or message.get("role") != "user":
-                continue
-            content = message.get("content", [])
-            if not isinstance(content, list):
-                continue
-            urls = []
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "text":
-                    continue
-                text = block.get("text", "")
-                if not isinstance(text, str) or "可灵公网图片地址" not in text:
-                    continue
-                match = re.search(r"可灵公网图片地址：([^\s。]+)", text)
-                if match and match.group(1) not in urls:
-                    urls.append(match.group(1))
-            if urls:
-                return urls
-        return []
-
-    @staticmethod
-    def _extract_http_urls(value):
-        """递归收集工具入参中的 http(s) URL，用于校验多图参考是否完整。"""
-        if isinstance(value, dict):
-            urls = []
-            for child in value.values():
-                urls.extend(ClaudeAIBot._extract_http_urls(child))
-            return urls
-        if isinstance(value, (list, tuple)):
-            urls = []
-            for child in value:
-                urls.extend(ClaudeAIBot._extract_http_urls(child))
-            return urls
-        if isinstance(value, str):
-            return re.findall(r"https?://[^\s\"'\]})]+", value)
-        return []
-
-    @staticmethod
-    def _strip_kling_media_links(reply_content):
-        """移除可灵结果文本中的原始视频/封面链接，视频仍由通道单独下发。"""
-        if not isinstance(reply_content, str):
-            return reply_content
-
-        # 可灵可能使用“视频地址（无水印版）”“成片地址（带水印）”“无水印版”
-        # 或“封面”等不同标签，链接紧随其后。
-        # 逐行处理可避免超长签名 URL 或括号格式影响后续正常文案。
-        media_label_pattern = (
-            r"(?:"
-            r"视频地址(?:\s*[（(][^)）]*[)）])?"
-            r"|成片(?:链接|地址)?(?:\s*[（(][^)）]*[)）])?"
-            r"|无水印(?:版|视频|地址|链接)?(?:\s*[（(][^)）]*[)）])?"
-            r"|封面(?:图|链接|地址)?(?:\s*[（(][^)）]*[)）])?"
-            r")"
-        )
-        cleaned_lines = []
-        skip_next_link = False
-        for line in reply_content.splitlines():
-            if re.match(
-                rf"^\s*{media_label_pattern}\s*[:：]\s*"
-                r"(?:https?://\S+|\[[^\]]*\]\(https?://[^)]+\))\s*$",
-                line,
-            ):
-                continue
-            if re.match(rf"^\s*{media_label_pattern}\s*[:：]\s*$", line):
-                skip_next_link = True
-                continue
-            if skip_next_link:
-                if not line.strip():
-                    continue
-                if re.match(r"^\s*(?:https?://|\[[^\]]*\]\(https?://)", line):
-                    skip_next_link = False
-                    continue
-                # 兼容标签和链接同行的非标准输出：仅跳过标签，保留该行正文。
-                skip_next_link = False
-            cleaned_lines.append(line)
-
-        cleaned_content = "\n".join(cleaned_lines)
-        return re.sub(r"\n{3,}", "\n\n", cleaned_content).strip()
 
     @staticmethod
     def _serialize_anthropic_blocks(blocks):

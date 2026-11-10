@@ -5,6 +5,7 @@ Bytedance volcengine_ark bot
 @Date 2025/10/19
 """
 
+import asyncio
 import json
 import os
 import time
@@ -18,6 +19,7 @@ from bot.ark.ark_error import (
     is_ark_status_error,
     is_ark_timeout_error,
 )
+from common.media_store import build_public_media_url
 from config import conf
 from bot.bot import Bot
 from bot.ark.ark_media import process_image_files, process_video_files
@@ -76,6 +78,7 @@ class VolcengineArkBot(Bot):
             )
 
             media_contents = []
+            kling_mcp_enabled = conf().get("kling_mcp_enabled", False)
             if quoted_file_cache:
                 quoted_file_contents = self._build_file_contents(quoted_file_cache)
                 if quoted_file_contents:
@@ -91,11 +94,25 @@ class VolcengineArkBot(Bot):
             if quoted_image_cache:
                 quoted_image_contents = process_image_files(quoted_image_cache)
                 media_contents.extend(quoted_image_contents)
+                if kling_mcp_enabled:
+                    media_contents.extend(
+                        self._build_kling_image_reference_contents(
+                            quoted_image_cache,
+                            "引用参考图",
+                        )
+                    )
                 logger.info(f"[{self.Model_ID}] 从引用回复图片缓存取内容, count={len(quoted_image_contents)}")
                 memory.USER_QUOTED_IMAGE_CACHE.pop(session_id, None)
             if image_cache:
                 image_contents = process_image_files(image_cache)
                 media_contents.extend(image_contents)
+                if kling_mcp_enabled:
+                    media_contents.extend(
+                        self._build_kling_image_reference_contents(
+                            image_cache,
+                            "参考图",
+                        )
+                    )
                 logger.info(f"[{self.Model_ID}] 从内存参考图取内容, count={len(image_contents)}")
                 memory.USER_IMAGE_CACHE.pop(session_id)
             if video_cache:
@@ -113,7 +130,24 @@ class VolcengineArkBot(Bot):
 
             session = self.sessions.session_query(query, session_id)
             if self.use_responses_api and self.model not in const.DOUBAO_BOT_LIST:
-                response = self._create_response(session, query)
+                kling_ready = False
+                if kling_mcp_enabled:
+                    from bot.kling.kling_mcp_auth import get_kling_oauth_manager
+
+                    kling_ready = get_kling_oauth_manager().has_valid_tokens()
+                    if not kling_ready:
+                        logger.warning(
+                            f"[{self.Model_ID}] Kling MCP is enabled, but OAuth authorization is unavailable; "
+                            "continuing without Kling tools"
+                        )
+
+                video_info = None
+                if kling_ready:
+                    response, video_info = asyncio.run(
+                        self._create_response_with_kling(session, query)
+                    )
+                else:
+                    response = self._create_response(session, query)
                 reply_text = self._extract_response_text(response)
                 total_tokens = self._extract_response_total_tokens(response)
                 session.previous_response_id = getattr(response, "id", None)
@@ -136,17 +170,35 @@ class VolcengineArkBot(Bot):
                 total_tokens = completion.usage.total_tokens if client_attr == 'chat' else completion.bot_usage.model_usage[0].total_tokens
             logger.info(f"[{self.Model_ID}] reply={reply_text}, requester={session_id}")
             self.sessions.session_reply(reply_text, session_id, total_tokens)
+            if self.use_responses_api and self.model not in const.DOUBAO_BOT_LIST:
+                if video_info and video_info.get("video_url"):
+                    from bot.kling.kling_mcp_client import KlingMCPClient
+
+                    clean_reply = KlingMCPClient.strip_media_links(reply_text)
+                    return Reply(
+                        ReplyType.VIDEO_URL,
+                        (
+                            video_info.get("duration", 5),
+                            video_info["video_url"],
+                            clean_reply,
+                        ),
+                    )
             return Reply(ReplyType.TEXT, reply_text)
 
         except Exception as e:
             logger.error(f"[{self.Model_ID}] fetch reply error, {e}")
             return Reply(ReplyType.ERROR, self._format_ark_error_message(e))
 
-    def _create_response(self, session, current_query):
+    def _create_response(self, session, current_query, tools=None, instructions=None):
         request_kwargs = {
             "model": self.model,
             "store": True,
         }
+        if instructions:
+            request_kwargs["instructions"] = instructions
+        if tools:
+            request_kwargs["tools"] = tools
+            request_kwargs["tool_choice"] = "auto"
         if session.previous_response_id and not session.remote_history_outdated:
             request_kwargs["input"] = self._to_response_input([{"role": "user", "content": current_query}])
             request_kwargs["previous_response_id"] = session.previous_response_id
@@ -164,6 +216,177 @@ class VolcengineArkBot(Bot):
         request_kwargs["input"] = self._to_response_input(session.messages)
         request_kwargs.pop("previous_response_id", None)
         return self.client.responses.create(**request_kwargs)
+
+    async def _create_response_with_kling(self, session, current_query):
+        from bot.kling.kling_mcp_client import KlingMCPClient
+
+        kling_client = KlingMCPClient()
+        max_rounds = int(conf().get("kling_mcp_max_tool_rounds", 20))
+        if max_rounds < 1:
+            raise ValueError("kling_mcp_max_tool_rounds must be at least 1")
+        reference_urls = KlingMCPClient.extract_reference_urls(session.messages)
+        instructions = (
+            "Kling MCP tools are available. Call a generation tool only when the user explicitly asks "
+            "to create an image or video, not for ordinary discussion. For asynchronous generation, "
+            "call query_tasks until the final media URL is available. Use the user's supplied Kling "
+            "public reference URLs when the request depends on uploaded images or video. Never call "
+            "file_upload; use the provided public reference URLs directly in the image URL parameters."
+        )
+        pending_generation_id = None
+        generation_duration = 5
+        captured_video = None
+
+        async with kling_client.connect() as connection:
+            kling_tools = [
+                tool
+                for tool in connection.tool_definitions()
+                if tool["name"] != "file_upload"
+            ]
+            if not kling_tools:
+                raise RuntimeError("可灵 MCP 服务未提供任何可用工具")
+
+            tools = [
+                {
+                    "type": "function",
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"],
+                }
+                for tool in kling_tools
+            ]
+            tool_names = {tool["name"] for tool in kling_tools}
+            response = self._create_response(
+                session,
+                current_query,
+                tools=tools,
+                instructions=instructions,
+            )
+
+            for _ in range(max_rounds):
+                tool_calls = [
+                    item
+                    for item in (self._get_attr_or_key(response, "output", []) or [])
+                    if self._get_attr_or_key(item, "type") == "function_call"
+                ]
+                if not tool_calls:
+                    if (
+                        pending_generation_id
+                        and not captured_video
+                        and "query_tasks" in tool_names
+                    ):
+                        captured_video = await connection.poll_task(
+                            pending_generation_id,
+                            duration=generation_duration,
+                        )
+                    return response, captured_video
+
+                response_id = self._get_attr_or_key(response, "id")
+                if not response_id:
+                    raise RuntimeError("Ark Responses API 工具调用响应缺少 response id")
+
+                tool_outputs = []
+                for tool_call in tool_calls:
+                    tool_name = self._get_attr_or_key(tool_call, "name")
+                    call_id = self._get_attr_or_key(tool_call, "call_id")
+                    raw_arguments = self._get_attr_or_key(tool_call, "arguments", "{}")
+                    if not call_id:
+                        raise RuntimeError(f"Ark 工具调用缺少 call_id: {tool_name}")
+                    if tool_name not in tool_names:
+                        raise RuntimeError(f"Ark 请求了未注册的可灵工具：{tool_name}")
+
+                    try:
+                        arguments = (
+                            json.loads(raw_arguments)
+                            if isinstance(raw_arguments, str)
+                            else raw_arguments
+                        )
+                    except json.JSONDecodeError as error:
+                        raise ValueError(f"Ark 工具参数不是有效 JSON：{tool_name}") from error
+                    if not isinstance(arguments, dict):
+                        raise ValueError(f"Ark 工具参数必须是 JSON 对象：{tool_name}")
+
+                    if (
+                        tool_name == "omni_ref_video"
+                        and len(reference_urls) > 1
+                    ):
+                        missing_urls = KlingMCPClient.missing_reference_urls(
+                            arguments,
+                            reference_urls,
+                        )
+                        if missing_urls:
+                            output = (
+                                f"本轮收到 {len(reference_urls)} 张用户参考图，但 omni_ref_video "
+                                f"工具参数只包含 {len(reference_urls) - len(missing_urls)} 张。"
+                                "请重新调用并将所有“可灵公网图片地址”原样填入多图参考参数。"
+                            )
+                            tool_outputs.append({
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": output,
+                            })
+                            continue
+
+                    if tool_name == "query_tasks":
+                        await asyncio.sleep(15)
+
+                    result = await connection.call_tool(tool_name, arguments)
+                    serialized_result = KlingMCPClient.serialize_result(result)
+                    if getattr(result, "is_error", getattr(result, "isError", False)):
+                        serialized_result = json.dumps({
+                            "is_error": True,
+                            "result": serialized_result,
+                        }, ensure_ascii=False)
+                    video_url, cover_url = KlingMCPClient.extract_video_info(serialized_result)
+                    if video_url:
+                        captured_video = {
+                            "video_url": video_url,
+                            "cover_url": cover_url,
+                            "duration": arguments.get("duration", generation_duration),
+                        }
+
+                    if tool_name in KlingMCPClient.GENERATION_TOOLS and not video_url:
+                        pending_generation_id = KlingMCPClient.extract_generation_id(
+                            serialized_result
+                        )
+                        generation_duration = arguments.get("duration", 5)
+                    elif tool_name == "query_tasks":
+                        pending_generation_id = (
+                            None
+                            if video_url
+                            else pending_generation_id
+                            or KlingMCPClient.extract_generation_id(arguments)
+                        )
+
+                    tool_outputs.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": serialized_result,
+                    })
+
+                response = self.client.responses.create(
+                    model=self.model,
+                    store=True,
+                    previous_response_id=response_id,
+                    input=tool_outputs,
+                    tools=tools,
+                    tool_choice="auto",
+                    instructions=instructions,
+                )
+
+            remaining_tool_calls = [
+                item
+                for item in (self._get_attr_or_key(response, "output", []) or [])
+                if self._get_attr_or_key(item, "type") == "function_call"
+            ]
+            if not remaining_tool_calls:
+                if pending_generation_id and not captured_video and "query_tasks" in tool_names:
+                    captured_video = await connection.poll_task(
+                        pending_generation_id,
+                        duration=generation_duration,
+                    )
+                return response, captured_video
+
+        raise RuntimeError(f"可灵工具调用超过最大轮次（{max_rounds}）")
 
     def _format_ark_error_message(self, error):
         if is_ark_status_error(error):
@@ -381,6 +604,38 @@ class VolcengineArkBot(Bot):
             elif block_type == "file":
                 summary["file"] += 1
         return summary
+
+    def _build_kling_image_reference_contents(self, image_cache, label):
+        references = []
+        image_paths = image_cache.get("path", [])
+        for index, image_path in enumerate(image_paths, start=1):
+            public_url = build_public_media_url(image_path) if image_path else None
+            if not public_url:
+                logger.warning(
+                    "[%s] could not build public URL for Kling %s %s: %s",
+                    self.Model_ID,
+                    label,
+                    index,
+                    image_path,
+                )
+                continue
+
+            references.append({
+                "type": "text",
+                "text": (
+                    f"[{label} {index} 的可灵公网图片地址：{public_url}。"
+                    "如果调用 Kling 的 image_to_video、omni_ref_video 或其他图片 URL 工具，"
+                    "请直接使用此地址，不要调用 file_upload。]"
+                ),
+            })
+            logger.info(
+                "[%s] Kling %s %s public_url=%s",
+                self.Model_ID,
+                label,
+                index,
+                public_url,
+            )
+        return references
 
     def _upload_pdf_to_ark(self, file_path):
         if not file_path or not os.path.exists(file_path):

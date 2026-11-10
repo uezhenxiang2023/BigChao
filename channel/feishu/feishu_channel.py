@@ -241,14 +241,16 @@ class FeiShuChanel(ChatChannel):
             self.send_text(f"[INFO]\n视频模型已切换为：{const.DOUBAO_SEEDANCE_20}", open_id)
             logger.info(f'[Lark] switch video model to {const.DOUBAO_SEEDANCE_20.upper()}, requester={open_id}')
         elif event_key == 'KlingVideo':
-            model_state.toggle_video_model(open_id, const.KLING_V3_OMNI)
-            self.send_text(f"[INFO]\n视频模型已切换为：{const.KLING_V3_OMNI}", open_id)
-            logger.info(f'[Lark] switch video model to {const.KLING_V3_OMNI.upper()}, requester={open_id}')
+            model_state.toggle_video_model(open_id, const.KLING_4)
+            self.send_text(f"[INFO]\n视频模型已切换为：{const.KLING_4}", open_id)
+            logger.info(f'[Lark] switch video model to {const.KLING_4.upper()}, requester={open_id}')
             if conf().get("kling_mcp_enabled"):
                 from bot.kling.kling_mcp_auth import trigger_kling_auth_if_needed
                 trigger_kling_auth_if_needed(
+                    open_browser=False,
+                    force=True,
                     notify_channel_fn=lambda url: self.send_text(
-                        f"【可灵 MCP 授权】检测到当前尚未连接可灵账号。\n已在电脑浏览器为您打开授权页面，或请在手机中点击链接完成授权：\n{url}",
+                        f"【可灵 MCP 授权】请点击以下链接完成可灵账号授权：\n{url}",
                         open_id
                     )
                 )
