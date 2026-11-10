@@ -130,6 +130,8 @@ class VolcengineArkBot(Bot):
 
             session = self.sessions.session_query(query, session_id)
             if self.use_responses_api and self.model not in const.DOUBAO_BOT_LIST:
+                pending_video_url = session.pending_video_url
+                response_query = self._add_pending_video_input(query, pending_video_url)
                 kling_ready = False
                 if kling_mcp_enabled:
                     from bot.kling.kling_mcp_auth import get_kling_oauth_manager
@@ -143,15 +145,28 @@ class VolcengineArkBot(Bot):
 
                 video_info = None
                 if kling_ready:
-                    response, video_info = asyncio.run(
-                        self._create_response_with_kling(session, query)
-                    )
+                    try:
+                        response, video_info = asyncio.run(
+                            self._create_response_with_kling(session, response_query)
+                        )
+                    except Exception as error:
+                        if not self._contains_kling_auth_required_error(error):
+                            raise
+                        logger.warning(
+                            f"[{self.Model_ID}] Kling MCP authorization is required; "
+                            "continuing this request without Kling tools",
+                            exc_info=True,
+                        )
+                        response = self._create_response(session, response_query)
                 else:
-                    response = self._create_response(session, query)
+                    response = self._create_response(session, response_query)
                 reply_text = self._extract_response_text(response)
                 total_tokens = self._extract_response_total_tokens(response)
                 session.previous_response_id = getattr(response, "id", None)
                 session.remote_history_outdated = False
+                if pending_video_url:
+                    session.pending_video_url = None
+                    logger.info(f"[{self.Model_ID}] sent pending generated video as incremental Responses input")
                 logger.info(
                     f"[{self.Model_ID}] Responses API response_id={getattr(response, 'id', None)}, "
                     f"previous_response_id={getattr(response, 'previous_response_id', None)}, requester={session_id}"
@@ -174,6 +189,8 @@ class VolcengineArkBot(Bot):
                 if video_info and video_info.get("video_url"):
                     from bot.kling.kling_mcp_client import KlingMCPClient
 
+                    session.pending_video_url = video_info["video_url"]
+                    logger.info(f"[{self.Model_ID}] queued generated video for next Responses request")
                     clean_reply = KlingMCPClient.strip_media_links(reply_text)
                     return Reply(
                         ReplyType.VIDEO_URL,
@@ -188,6 +205,33 @@ class VolcengineArkBot(Bot):
         except Exception as e:
             logger.error(f"[{self.Model_ID}] fetch reply error, {e}")
             return Reply(ReplyType.ERROR, self._format_ark_error_message(e))
+
+    def _add_pending_video_input(self, current_query, video_url):
+        if not video_url:
+            return current_query
+
+        if isinstance(current_query, list):
+            content = list(current_query)
+        else:
+            content = [{"type": "text", "text": current_query}]
+        content.insert(0, {
+            "type": "video_url",
+            "video_url": {
+                "url": video_url,
+                "fps": 1,
+            },
+        })
+        return content
+
+    @staticmethod
+    def _contains_kling_auth_required_error(error):
+        if "可灵 MCP 尚未授权" in str(error):
+            return True
+        nested_errors = getattr(error, "exceptions", ())
+        return any(
+            VolcengineArkBot._contains_kling_auth_required_error(nested_error)
+            for nested_error in nested_errors
+        )
 
     def _create_response(self, session, current_query, tools=None, instructions=None):
         request_kwargs = {
@@ -213,7 +257,18 @@ class VolcengineArkBot(Bot):
                 session.previous_response_id = None
                 session.remote_history_outdated = True
 
-        request_kwargs["input"] = self._to_response_input(session.messages)
+        replay_messages = list(session.messages)
+        if replay_messages and replay_messages[-1].get("role") == "user":
+            replay_messages[-1] = {
+                "role": "user",
+                "content": current_query,
+            }
+        else:
+            replay_messages.append({
+                "role": "user",
+                "content": current_query,
+            })
+        request_kwargs["input"] = self._to_response_input(replay_messages)
         request_kwargs.pop("previous_response_id", None)
         return self.client.responses.create(**request_kwargs)
 

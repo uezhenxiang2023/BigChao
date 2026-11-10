@@ -8,12 +8,14 @@ class VolcengineArkSession(Session):
         self.last_total_tokens = None  # 上一轮 API 返回的准确 token 数
         self.previous_response_id = None
         self.remote_history_outdated = False
+        self.pending_video_url = None
         self.reset()
 
     def reset(self):
         super().reset()
         self.previous_response_id = None
         self.remote_history_outdated = False
+        self.pending_video_url = None
 
     def set_system_prompt(self, system_prompt):
         self.system_prompt = system_prompt
