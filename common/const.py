@@ -170,7 +170,7 @@ DOUBAO_SEED_20 = "doubao-seed-2-0-pro-260215"
 DOUBAO_SEED_20_MINI = "doubao-seed-2-0-mini-260428"
 DOUBAO_SEED_20_LITE = "doubao-seed-2-0-lite-260428"
 DOUBAO_SEED_21_TURBO = "doubao-seed-2-1-turbo-260628"
-DOUBAO_SEED_21_PRO = "doubao-seed-2-1-pro-260628"
+DOUBAO_SEED_21_PRO = "doubao-seed-2-1-pro-260915"
 DOUBAO_SEED_EVOLVING = "doubao-seed-evolving"
 
 
