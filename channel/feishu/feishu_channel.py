@@ -300,6 +300,15 @@ class FeiShuChanel(ChatChannel):
             model_state.toggle_video_model(open_id, const.LUMA_RAY_32)
             self.send_text(f"[INFO]\n视频模型已切换为：{const.LUMA_RAY_32}", open_id)
             logger.info(f'[Lark] switch video model to {const.LUMA_RAY_32.upper()}, requester={open_id}')
+        elif event_key == 'Blender':
+            blender_mcp_enabled = not conf().get("blender_mcp_enabled", False)
+            conf()["blender_mcp_enabled"] = blender_mcp_enabled
+            if blender_mcp_enabled:
+                self.send_text("[INFO]\nBlender MCP 服务已开启", open_id)
+                logger.info(f'[Lark] enable Blender MCP, requester={open_id}')
+            else:
+                self.send_text("[INFO]\nBlender MCP 服务已关闭", open_id)
+                logger.info(f'[Lark] disable Blender MCP, requester={open_id}')
 
     def handle_webhook_event(self):
         """Webhook event handler"""

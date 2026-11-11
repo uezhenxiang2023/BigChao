@@ -38,5 +38,6 @@
   "use_linkai": false,
   "linkai_api_key": "",
   "linkai_app_code": "",
-  "kling_mcp_enabled": false
+  "kling_mcp_enabled": false,
+  "blender_mcp_enabled": false
 }

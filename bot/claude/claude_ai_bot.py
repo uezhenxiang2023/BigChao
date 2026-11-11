@@ -246,74 +246,21 @@ class ClaudeAIBot(Bot):
 
             # 1. 初始化 Blender MCP (若启用)
             if conf().get("blender_mcp_enabled"):
-                command = conf().get("blender_mcp_command")
-                if not command:
-                    raise ValueError("未配置 blender_mcp_command")
-
-                mcp_cwd = conf().get("blender_mcp_cwd") or None
-                configured_args = conf().get("blender_mcp_args") or ["-m", "blmcp"]
-
-                if mcp_cwd and configured_args == ["-m", "blmcp"]:
-                    runner_script = os.path.join(mcp_cwd, "run_mcp_entrypoint.py")
-                    try:
-                        with open(runner_script, "w", encoding="utf-8") as f:
-                            f.write(
-                                "import os, sys\n"
-                                "from pathlib import Path\n"
-                                "here = Path(__file__).resolve().parent\n"
-                                "venv_site = here / '.venv' / 'Lib' / 'site-packages'\n"
-                                "if venv_site.exists():\n"
-                                "    sys.path.insert(0, str(venv_site))\n"
-                                "sys.path.insert(0, str(here))\n"
-                                "os.environ['PYDEVD_DISABLE_FILE_VALIDATION'] = '1'\n"
-                                "os.environ['PYDEVD_DONT_TRACE_CHILD_PROCESSES'] = '1'\n"
-                                "from blmcp import main\n"
-                                "if __name__ == '__main__':\n"
-                                "    sys.exit(main())\n"
-                            )
-                        server_args = [runner_script]
-                    except Exception as e:
-                        logger.warning(f"[{self.Model_ID}] 写入 MCP entrypoint 失败，回退到默认参数: {e}")
-                        server_args = configured_args
-                else:
-                    server_args = configured_args
-
-                if mcp_cwd:
-                    _venv_site = str(Path(conf().get("blender_mcp_command", "")).parent.parent / "Lib" / "site-packages")
-                    server_env = {
-                        "PYTHONPATH": _venv_site + os.pathsep + mcp_cwd,
-                        "PYDEVD_DISABLE_FILE_VALIDATION": "1",
-                        "PYDEVD_DONT_TRACE_CHILD_PROCESSES": "1",
-                    }
-                else:
-                    server_env = None
-
-                server_params = StdioServerParameters(
-                    command=command,
-                    args=server_args,
-                    cwd=mcp_cwd,
-                    env=server_env,
-                )
-                stderr_log_path = os.path.join(os.getcwd(), "logs", "blender_mcp_stderr.log")
-                os.makedirs(os.path.dirname(stderr_log_path), exist_ok=True)
-
-                stderr_log = stack.enter_context(open(stderr_log_path, "a", encoding="utf-8"))
-                stderr_log.write("\n--- Blender MCP session started ---\n")
-                stderr_log.flush()
-
-                read_stream, write_stream = await stack.enter_async_context(
-                    stdio_client(server_params, errlog=stderr_log)
-                )
-                blender_session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-                await blender_session.initialize()
-                tool_list = await blender_session.list_tools()
-                for tool in tool_list.tools:
-                    mcp_tools[tool.name] = (blender_session, False)
-                    tool_definitions.append({
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "input_schema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
-                    })
+                try:
+                    from bot.blender.blender_mcp_client import BlenderMCPClient
+                    blender_client = BlenderMCPClient()
+                    blender_connection = await stack.enter_async_context(blender_client.connect())
+                    blender_tools = blender_connection.tool_definitions()
+                    for tool in blender_tools:
+                        mcp_tools[tool["name"]] = (blender_connection, False)
+                    tool_definitions.extend(blender_tools)
+                    logger.info(
+                        f"[{self.Model_ID}] Blender MCP 已连接并载入工具: "
+                        f"{[tool['name'] for tool in blender_tools]}"
+                    )
+                except Exception as e:
+                    logger.exception(f"[{self.Model_ID}] 初始化 Blender MCP 失败: {e}")
+                    raise RuntimeError(f"Blender MCP 服务连接失败：{e}")
 
             # 2. 初始化 Kling MCP (若启用且已完成授权)
             from bot.kling.kling_mcp_auth import get_kling_oauth_manager
@@ -396,8 +343,10 @@ class ClaudeAIBot(Bot):
                     # 参考图填入工具参数；此时不要让可灵提交一个错误的任务，而是把
                     # 缺失信息作为 tool_result 返给 Claude，促使它补齐后重试。
                     if is_kling and tool_name == "omni_ref_video" and len(kling_reference_urls) > 1:
+                        tool_input = tool_use.get("input", {})
+                        submitted_urls = KlingMCPClient.extract_http_urls(tool_input)
                         missing_urls = KlingMCPClient.missing_reference_urls(
-                            tool_use.get("input", {}),
+                            tool_input,
                             kling_reference_urls,
                         )
                         logger.info(
@@ -431,10 +380,11 @@ class ClaudeAIBot(Bot):
                         await asyncio.sleep(poll_interval)
 
                     result = await target_session.call_tool(tool_name, tool_use.get("input", {}))
+                    from bot.blender.blender_mcp_client import BlenderMCPClient
                     serialized_res = (
                         KlingMCPClient.serialize_result(result)
                         if is_kling
-                        else self._serialize_mcp_result(result)
+                        else BlenderMCPClient.serialize_result(result)
                     )
 
                     if is_kling:

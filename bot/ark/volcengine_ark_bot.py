@@ -132,6 +132,9 @@ class VolcengineArkBot(Bot):
             if self.use_responses_api and self.model not in const.DOUBAO_BOT_LIST:
                 pending_video_url = session.pending_video_url
                 response_query = self._add_pending_video_input(query, pending_video_url)
+                blender_mcp_enabled = conf().get("blender_mcp_enabled", False)
+                blender_ready = bool(blender_mcp_enabled and conf().get("blender_mcp_command"))
+
                 kling_ready = False
                 if kling_mcp_enabled:
                     from bot.kling.kling_mcp_auth import get_kling_oauth_manager
@@ -144,10 +147,12 @@ class VolcengineArkBot(Bot):
                         )
 
                 video_info = None
-                if kling_ready:
+                if kling_ready or blender_ready:
                     try:
                         response, video_info = asyncio.run(
-                            self._create_response_with_kling(session, response_query)
+                            self._create_response_with_mcp(
+                                session, response_query, enable_kling=kling_ready, enable_blender=blender_ready
+                            )
                         )
                     except Exception as error:
                         if not self._contains_kling_auth_required_error(error):
@@ -157,7 +162,14 @@ class VolcengineArkBot(Bot):
                             "continuing this request without Kling tools",
                             exc_info=True,
                         )
-                        response = self._create_response(session, response_query)
+                        if blender_ready:
+                            response, video_info = asyncio.run(
+                                self._create_response_with_mcp(
+                                    session, response_query, enable_kling=False, enable_blender=True
+                                )
+                            )
+                        else:
+                            response = self._create_response(session, response_query)
                 else:
                     response = self._create_response(session, response_query)
                 reply_text = self._extract_response_text(response)
@@ -273,32 +285,90 @@ class VolcengineArkBot(Bot):
         return self.client.responses.create(**request_kwargs)
 
     async def _create_response_with_kling(self, session, current_query):
-        from bot.kling.kling_mcp_client import KlingMCPClient
-
-        kling_client = KlingMCPClient()
-        max_rounds = int(conf().get("kling_mcp_max_tool_rounds", 20))
-        if max_rounds < 1:
-            raise ValueError("kling_mcp_max_tool_rounds must be at least 1")
-        reference_urls = KlingMCPClient.extract_reference_urls(session.messages)
-        instructions = (
-            "Kling MCP tools are available. Call a generation tool only when the user explicitly asks "
-            "to create an image or video, not for ordinary discussion. For asynchronous generation, "
-            "call query_tasks until the final media URL is available. Use the user's supplied Kling "
-            "public reference URLs when the request depends on uploaded images or video. Never call "
-            "file_upload; use the provided public reference URLs directly in the image URL parameters."
+        return await self._create_response_with_mcp(
+            session, current_query, enable_kling=True, enable_blender=False
         )
+
+    async def _create_response_with_mcp(
+        self, session, current_query, enable_kling: bool = True, enable_blender: bool = False
+    ):
+        import contextlib
+        from bot.kling.kling_mcp_client import KlingMCPClient
+        from bot.blender.blender_mcp_client import BlenderMCPClient
+
+        max_rounds = int(
+            conf().get("kling_mcp_max_tool_rounds")
+            or conf().get("blender_mcp_max_tool_rounds")
+            or 20
+        )
+        if max_rounds < 1:
+            raise ValueError("mcp max_tool_rounds must be at least 1")
+
+        reference_urls = []
+        instructions_parts = []
+        if enable_kling:
+            reference_urls = KlingMCPClient.extract_reference_urls(session.messages)
+            instructions_parts.append(
+                "Kling MCP tools are available. Call a generation tool only when the user explicitly asks "
+                "to create an image or video, not for ordinary discussion. For asynchronous generation, "
+                "call query_tasks until the final media URL is available. Use the user's supplied Kling "
+                "public reference URLs when the request depends on uploaded images or video. Never call "
+                "file_upload; use the provided public reference URLs directly in the image URL parameters."
+            )
+        if enable_blender:
+            instructions_parts.append(
+                "Blender MCP tools are available. You can inspect the active Blender scene, "
+                "objects, datablocks, materials, and execute Python scripts in Blender using execute_blender_code "
+                "to automate 3D modeling, rendering, scene inspection, and modifications."
+            )
+        instructions = "\n\n".join(instructions_parts)
+
         pending_generation_id = None
         generation_duration = 5
         captured_video = None
 
-        async with kling_client.connect() as connection:
-            kling_tools = [
-                tool
-                for tool in connection.tool_definitions()
-                if tool["name"] != "file_upload"
-            ]
-            if not kling_tools:
-                raise RuntimeError("可灵 MCP 服务未提供任何可用工具")
+        async with contextlib.AsyncExitStack() as stack:
+            # mcp_tools: tool_name -> (connection, is_kling)
+            mcp_tools = {}
+            all_tool_defs = []
+
+            # 1. 挂载 Blender 工具 (若启用)
+            if enable_blender:
+                try:
+                    blender_client = BlenderMCPClient()
+                    blender_conn = await stack.enter_async_context(blender_client.connect())
+                    b_tools = blender_conn.tool_definitions()
+                    for t in b_tools:
+                        mcp_tools[t["name"]] = (blender_conn, False)
+                    all_tool_defs.extend(b_tools)
+                    logger.info(
+                        f"[{self.Model_ID}] Blender MCP 已连接并为 Ark 载入工具: "
+                        f"{[t['name'] for t in b_tools]}"
+                    )
+                except Exception as e:
+                    logger.warning(f"[{self.Model_ID}] Ark 连接 Blender MCP 失败: {e}")
+                    if not enable_kling:
+                        raise
+
+            # 2. 挂载 Kling 工具 (若启用)
+            if enable_kling:
+                kling_client = KlingMCPClient()
+                kling_conn = await stack.enter_async_context(kling_client.connect())
+                k_tools = [
+                    tool
+                    for tool in kling_conn.tool_definitions()
+                    if tool["name"] != "file_upload"
+                ]
+                for t in k_tools:
+                    mcp_tools[t["name"]] = (kling_conn, True)
+                all_tool_defs.extend(k_tools)
+                logger.info(
+                    f"[{self.Model_ID}] Kling MCP 已连接并为 Ark 载入工具: "
+                    f"{[t['name'] for t in k_tools]}"
+                )
+
+            if not mcp_tools:
+                raise RuntimeError("未提供任何可用的 MCP 工具")
 
             tools = [
                 {
@@ -307,9 +377,9 @@ class VolcengineArkBot(Bot):
                     "description": tool["description"],
                     "parameters": tool["input_schema"],
                 }
-                for tool in kling_tools
+                for tool in all_tool_defs
             ]
-            tool_names = {tool["name"] for tool in kling_tools}
+            tool_names = set(mcp_tools.keys())
             response = self._create_response(
                 session,
                 current_query,
@@ -329,10 +399,12 @@ class VolcengineArkBot(Bot):
                         and not captured_video
                         and "query_tasks" in tool_names
                     ):
-                        captured_video = await connection.poll_task(
-                            pending_generation_id,
-                            duration=generation_duration,
-                        )
+                        kling_conn_item = mcp_tools.get("query_tasks")
+                        if kling_conn_item:
+                            captured_video = await kling_conn_item[0].poll_task(
+                                pending_generation_id,
+                                duration=generation_duration,
+                            )
                     return response, captured_video
 
                 response_id = self._get_attr_or_key(response, "id")
@@ -347,7 +419,7 @@ class VolcengineArkBot(Bot):
                     if not call_id:
                         raise RuntimeError(f"Ark 工具调用缺少 call_id: {tool_name}")
                     if tool_name not in tool_names:
-                        raise RuntimeError(f"Ark 请求了未注册的可灵工具：{tool_name}")
+                        raise RuntimeError(f"Ark 请求了未注册的 MCP 工具：{tool_name}")
 
                     try:
                         arguments = (
@@ -360,8 +432,11 @@ class VolcengineArkBot(Bot):
                     if not isinstance(arguments, dict):
                         raise ValueError(f"Ark 工具参数必须是 JSON 对象：{tool_name}")
 
+                    conn, is_kling = mcp_tools[tool_name]
+
                     if (
-                        tool_name == "omni_ref_video"
+                        is_kling
+                        and tool_name == "omni_ref_video"
                         and len(reference_urls) > 1
                     ):
                         missing_urls = KlingMCPClient.missing_reference_urls(
@@ -381,36 +456,40 @@ class VolcengineArkBot(Bot):
                             })
                             continue
 
-                    if tool_name == "query_tasks":
+                    if is_kling and tool_name == "query_tasks":
                         await asyncio.sleep(15)
 
-                    result = await connection.call_tool(tool_name, arguments)
-                    serialized_result = KlingMCPClient.serialize_result(result)
-                    if getattr(result, "is_error", getattr(result, "isError", False)):
-                        serialized_result = json.dumps({
-                            "is_error": True,
-                            "result": serialized_result,
-                        }, ensure_ascii=False)
-                    video_url, cover_url = KlingMCPClient.extract_video_info(serialized_result)
-                    if video_url:
-                        captured_video = {
-                            "video_url": video_url,
-                            "cover_url": cover_url,
-                            "duration": arguments.get("duration", generation_duration),
-                        }
+                    result = await conn.call_tool(tool_name, arguments)
 
-                    if tool_name in KlingMCPClient.GENERATION_TOOLS and not video_url:
-                        pending_generation_id = KlingMCPClient.extract_generation_id(
-                            serialized_result
-                        )
-                        generation_duration = arguments.get("duration", 5)
-                    elif tool_name == "query_tasks":
-                        pending_generation_id = (
-                            None
-                            if video_url
-                            else pending_generation_id
-                            or KlingMCPClient.extract_generation_id(arguments)
-                        )
+                    if is_kling:
+                        serialized_result = KlingMCPClient.serialize_result(result)
+                        if getattr(result, "is_error", getattr(result, "isError", False)):
+                            serialized_result = json.dumps({
+                                "is_error": True,
+                                "result": serialized_result,
+                            }, ensure_ascii=False)
+                        video_url, cover_url = KlingMCPClient.extract_video_info(serialized_result)
+                        if video_url:
+                            captured_video = {
+                                "video_url": video_url,
+                                "cover_url": cover_url,
+                                "duration": arguments.get("duration", generation_duration),
+                            }
+
+                        if tool_name in KlingMCPClient.GENERATION_TOOLS and not video_url:
+                            pending_generation_id = KlingMCPClient.extract_generation_id(
+                                serialized_result
+                            )
+                            generation_duration = arguments.get("duration", 5)
+                        elif tool_name == "query_tasks":
+                            pending_generation_id = (
+                                None
+                                if video_url
+                                else pending_generation_id
+                                or KlingMCPClient.extract_generation_id(arguments)
+                            )
+                    else:
+                        serialized_result = BlenderMCPClient.serialize_result(result)
 
                     tool_outputs.append({
                         "type": "function_call_output",
@@ -435,13 +514,15 @@ class VolcengineArkBot(Bot):
             ]
             if not remaining_tool_calls:
                 if pending_generation_id and not captured_video and "query_tasks" in tool_names:
-                    captured_video = await connection.poll_task(
-                        pending_generation_id,
-                        duration=generation_duration,
-                    )
+                    kling_conn_item = mcp_tools.get("query_tasks")
+                    if kling_conn_item:
+                        captured_video = await kling_conn_item[0].poll_task(
+                            pending_generation_id,
+                            duration=generation_duration,
+                        )
                 return response, captured_video
 
-        raise RuntimeError(f"可灵工具调用超过最大轮次（{max_rounds}）")
+        raise RuntimeError(f"MCP 工具调用超过最大轮次（{max_rounds}）")
 
     def _format_ark_error_message(self, error):
         if is_ark_status_error(error):
