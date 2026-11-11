@@ -101,7 +101,6 @@ class KlingOAuthManager:
         self.storage_path = storage_path
         self.redirect_port = int(conf().get("kling_mcp_redirect_port") or redirect_port)
         self.redirect_uri = f"http://127.0.0.1:{self.redirect_port}/callback"
-
         self.storage = KlingTokenFileStorage(self.storage_path)
         self.latest_auth_url: Optional[str] = None
         self._auth_notify_callback: Optional[Callable[[str], None]] = None
@@ -136,11 +135,22 @@ class KlingOAuthManager:
                 redirect_handler=self._redirect_handler,
                 callback_handler=self._callback_handler,
             )
+            # 同步更新 MCP SDK 上下文的过期时间，避免 SDK 误判 token 永不过期
+            token_data = self.storage._read_data().get("tokens") or {}
+            access_token = token_data.get("access_token")
+            if access_token:
+                exp = self.storage.extract_token_exp(access_token)
+                if exp:
+                    self._provider.context.token_expiry_time = exp
         return self._provider
 
     async def _redirect_handler(self, auth_url: str):
         """当 MCP 鉴权流程触发重定向时被调用"""
         if not self._interactive_auth_requested:
+            # 尝试做一次静默刷新作为最后一道防线
+            if self.storage.refresh_tokens_sync():
+                logger.info("[KlingOAuth] 在重定向拦截处自动刷新 Token 成功")
+                return
             raise RuntimeError("可灵 MCP 尚未授权，请点击飞书视频模型菜单中的 Kling 发起授权。")
 
         self.latest_auth_url = auth_url

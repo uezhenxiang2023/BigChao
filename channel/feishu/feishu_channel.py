@@ -75,6 +75,8 @@ class FeiShuChanel(ChatChannel):
         # Keep message ids long enough to cover delayed retries from async generation.
         self._recent_message_events = ExpiredDict(conf().get("feishu_event_dedupe_seconds", 60 * 60 * 24))
         self._recent_message_events_lock = threading.Lock()
+        self._recent_menu_events = ExpiredDict(conf().get("feishu_event_dedupe_seconds", 60 * 60 * 24))
+        self._recent_menu_events_lock = threading.Lock()
 
     def _get_current_image_model_id(self, user_id):
         return model_state.get_image_model(user_id).upper()
@@ -179,9 +181,29 @@ class FeiShuChanel(ChatChannel):
     # Register event handler to handle bot menu.
     # https://open.feishu.cn/document/client-docs/bot-v3/events/menu
     def do_p2_application_bot_menu_v6(self, data: lark.application.v6.P2ApplicationBotMenuV6) -> None:
-        logger.info(f'[ do_p2_application_bot_menu_v6 access ], data: {lark.JSON.marshal(data, indent=4)}')
         event_key = data.event.event_key
         open_id = data.event.operator.operator_id.open_id
+        event_id = getattr(data.header, "event_id", None)
+        if event_id:
+            with self._recent_menu_events_lock:
+                if event_id in self._recent_menu_events:
+                    logger.warning(
+                        "[Lark-menu] duplicate event ignored, event_id=%s, event_key=%s, requester=%s",
+                        event_id,
+                        event_key,
+                        open_id,
+                    )
+                    return
+                self._recent_menu_events[event_id] = {
+                    "event_key": event_key,
+                    "open_id": open_id,
+                }
+        logger.info(
+            "[Lark-menu] event received, event_id=%s, event_key=%s, requester=%s",
+            event_id,
+            event_key,
+            open_id,
+        )
         if event_key == 'Generation':
             model_state.toggle_image_mode(open_id, event_key)
             self.send_text(f"[INFO]\n图片模式已切换为：生成新图模式", open_id)
@@ -242,18 +264,30 @@ class FeiShuChanel(ChatChannel):
             logger.info(f'[Lark] switch video model to {const.DOUBAO_SEEDANCE_20.upper()}, requester={open_id}')
         elif event_key == 'KlingVideo':
             model_state.toggle_video_model(open_id, const.KLING_4)
-            self.send_text(f"[INFO]\n视频模型已切换为：{const.KLING_4}", open_id)
             logger.info(f'[Lark] switch video model to {const.KLING_4.upper()}, requester={open_id}')
-            if conf().get("kling_mcp_enabled"):
+            kling_mcp_enabled = not conf().get("kling_mcp_enabled", False)
+            conf()["kling_mcp_enabled"] = kling_mcp_enabled
+            if kling_mcp_enabled:
+                logger.info(f'[Lark] enable Kling MCP, requester={open_id}')
                 from bot.kling.kling_mcp_auth import trigger_kling_auth_if_needed
-                trigger_kling_auth_if_needed(
-                    open_browser=False,
-                    force=True,
-                    notify_channel_fn=lambda url: self.send_text(
-                        f"【可灵 MCP 授权】请点击以下链接完成可灵账号授权：\n{url}",
-                        open_id
+
+                def send_auth_msg(url: str):
+                    msg = (
+                        "[INFO]\n可灵 MCP 服务已开启\n\n"
+                        f"【可灵 MCP 授权】请点击以下链接完成可灵账号授权：\n{url}\n\n"
+                        "💡 温馨提示：可灵官方授权页暂未适配手机端，请直接在电脑端浏览器中打开上述链接完成授权（只需在电脑端授权一次即可永久生效）。"
                     )
+                    self.send_text(msg, open_id)
+
+                needs_auth = trigger_kling_auth_if_needed(
+                    open_browser=False,
+                    notify_channel_fn=send_auth_msg
                 )
+                if not needs_auth:
+                    self.send_text("[INFO]\n可灵 MCP 服务已开启", open_id)
+            else:
+                self.send_text("[INFO]\n可灵 MCP 服务已关闭", open_id)
+                logger.info(f'[Lark] disable Kling MCP, requester={open_id}')
         elif event_key == 'Veo':
             model_state.toggle_video_model(open_id, const.VEO_31)
             self.send_text(f"[INFO]\n视频模型已切换为：{const.VEO_31}", open_id)
