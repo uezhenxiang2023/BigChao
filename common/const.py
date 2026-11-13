@@ -113,7 +113,10 @@ GEMINI_35_FLASH = "gemini-3.5-flash"
 GEMINI_35_FLASH_LITE = "gemini-3.5-flash-lite"
 GEMINI_36_FLASH = "gemini-3.6-flash"
 GEMINI_38_FLASH = "gemini-3.8-flash"
-GEMINI_PAID = [GEMINI_25_PRO, GEMINI_31_PRO_PREVIEW, GEMINI_35_FLASH]
+GEMINI_4_HYDROGEN = "gemini-4-hydrogen"
+GEMINI_4_ARGON = "gemini-4-argon"
+GEMINI_4_CARBON = "gemini-4-carbon"
+GEMINI_PAID = [GEMINI_25_PRO, GEMINI_31_PRO_PREVIEW, GEMINI_35_FLASH, GEMINI_4_ARGON, GEMINI_4_CARBON]
 
 # Google_Gemini_image
 IMAGEN_4 = "imagen-4.0-generate-001"
