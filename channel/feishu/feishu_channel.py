@@ -235,9 +235,9 @@ class FeiShuChanel(ChatChannel):
         elif event_key == 'breakdowning':
             self.breakdown(open_id)
         elif event_key == 'SeedDream':
-            model_state.toggle_image_model(open_id, const.DOUBAO_SEEDREAM_5)
-            self.send_text(f"[INFO]\n图片模型已切换为：{const.DOUBAO_SEEDREAM_5}", open_id)
-            logger.info(f'[Lark] switch image model to {const.DOUBAO_SEEDREAM_5.upper()}, requester={open_id}')
+            model_state.toggle_image_model(open_id, const.DOUBAO_SEEDREAM_55)
+            self.send_text(f"[INFO]\n图片模型已切换为：{const.DOUBAO_SEEDREAM_55}", open_id)
+            logger.info(f'[Lark] switch image model to {const.DOUBAO_SEEDREAM_55.upper()}, requester={open_id}')
         elif event_key == 'KlingImage':
             model_state.toggle_image_model(open_id, const.KLING_V3_OMNI)
             self.send_text(f"[INFO]\n图片模型已切换为：{const.KLING_V3_OMNI}", open_id)

@@ -54,7 +54,7 @@ class DoubaoImageBot(Bot):
         self.client = Ark(api_key=conf().get("ark_api_key"))
 
     def reply(self, query, context: Context = None) -> Reply:
-        error_model = const.DOUBAO_SEEDREAM_5
+        error_model = const.DOUBAO_SEEDREAM_55
         try:
             session_id = context["session_id"]
             model = model_state.get_image_model(session_id)
@@ -69,19 +69,30 @@ class DoubaoImageBot(Bot):
                 "prompt": query,
                 "response_format": "url",
                 "watermark": False,
-                "sequential_image_generation": "disabled"
             }
-            sequential_image_count = self._parse_sequential_image_count_from_prompt(query)
-            if sequential_image_count and model in const.DOUBAO_SEEDREAM_LIST:
-                params.update({
-                    "sequential_image_generation": "auto",
-                    "sequential_image_generation_options": SequentialImageGenerationOptions(
-                        max_images=sequential_image_count
+            # 仅在支持组图特性的模型（如 Seedream 4.0/4.5/5.0）上传递 sequential_image_generation
+            if model in {const.DOUBAO_SEEDREAM_4, const.DOUBAO_SEEDREAM_45, const.DOUBAO_SEEDREAM_5}:
+                params["sequential_image_generation"] = "disabled"
+                sequential_image_count = self._parse_sequential_image_count_from_prompt(query)
+                if sequential_image_count:
+                    params.update({
+                        "sequential_image_generation": "auto",
+                        "sequential_image_generation_options": SequentialImageGenerationOptions(
+                            max_images=sequential_image_count
+                        )
+                    })
+                    logger.info(
+                        f"[{model.upper()}] 从 prompt 中解析到组图数量: {sequential_image_count}, "
+                        "已启用 sequential_image_generation=auto"
                     )
-                })
+
+            # Seedream 5.5 / 5.0-pro 原生透明背景支持
+            if model in {const.DOUBAO_SEEDREAM_55, const.DOUBAO_SEEDREAM_5_PRO} and self._is_transparent_background_requested(query):
+                params["extra_body"] = {"background": "transparent"}
+                params["output_format"] = "png"
                 logger.info(
-                    f"[{model.upper()}] 从 prompt 中解析到组图数量: {sequential_image_count}, "
-                    "已启用 sequential_image_generation=auto"
+                    f"[{model.upper()}] 从 prompt 中解析到透明背景需求, "
+                    "已启用 background=transparent, output_format=png"
                 )
             default_aspect_ratio = conf().get("image_aspect_ratio", "16:9")
             prompt_aspect_ratio = self._parse_aspect_ratio_from_prompt(query)
@@ -272,3 +283,14 @@ class DoubaoImageBot(Bot):
         if count <= 1:
             return None
         return min(count, self._SEQUENTIAL_IMAGE_MAX_COUNT)
+
+    @staticmethod
+    def _is_transparent_background_requested(prompt: str) -> bool:
+        if not prompt:
+            return False
+        keywords = [
+            "透明背景", "透明底", "透明图", "透明通道", "免抠", "抠图", 
+            "透明png", "transparent background", "transparent"
+        ]
+        prompt_lower = prompt.lower()
+        return any(kw in prompt_lower for kw in keywords)
