@@ -309,6 +309,25 @@ class FeiShuChanel(ChatChannel):
             else:
                 self.send_text("[INFO]\nBlender MCP 服务已关闭", open_id)
                 logger.info(f'[Lark] disable Blender MCP, requester={open_id}')
+        elif event_key in ('Unreal', 'unreal'):
+            unreal_mcp_enabled = not conf().get("unreal_mcp_enabled", False)
+            conf()["unreal_mcp_enabled"] = unreal_mcp_enabled
+            if unreal_mcp_enabled:
+                from bot.unreal.unreal_mcp_client import UnrealMCPClient
+                client = UnrealMCPClient()
+                is_ready = client.is_ready()
+                allowed = client.is_session_allowed(open_id)
+                tip_parts = []
+                if not is_ready:
+                    tip_parts.append("检测到本机 Unreal 编辑器尚未连接（请确认 Unreal 编辑器已启动且已开启 MCP 插件，默认端口 8000）")
+                if not allowed:
+                    tip_parts.append("当前用户不在 `unreal_mcp_allowed_users` 白名单中")
+                tip = f"\n\n💡 提示：{'; '.join(tip_parts)}" if tip_parts else ""
+                self.send_text(f"[INFO]\nUnreal MCP 服务已开启{tip}", open_id)
+                logger.info(f'[Lark] enable Unreal MCP, is_ready={is_ready}, allowed={allowed}, requester={open_id}')
+            else:
+                self.send_text("[INFO]\nUnreal MCP 服务已关闭", open_id)
+                logger.info(f'[Lark] disable Unreal MCP, requester={open_id}')
 
     def handle_webhook_event(self):
         """Webhook event handler"""

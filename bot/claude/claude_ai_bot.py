@@ -6,7 +6,8 @@ import os
 import re
 from pathlib import Path
 
-from anthropic import Anthropic
+import httpx
+from anthropic import Anthropic, APITimeoutError
 from bot.bot import Bot
 from bot.claude.claude_ai_session import ClaudeAiSession
 from bot.session_manager import SessionManager
@@ -28,9 +29,14 @@ class ClaudeAIBot(Bot):
 
     def __init__(self):
         super().__init__()
+        connect_timeout = float(conf().get("anthropic_connect_timeout") or 15.0)
+        read_timeout = float(conf().get("anthropic_timeout") or 300.0)
+        client_timeout = httpx.Timeout(timeout=read_timeout, connect=connect_timeout)
         self.client = Anthropic(
             api_key=conf().get("anthropic_api_key"),
-            base_url=conf().get("anthropic_base_url")
+            base_url=conf().get("anthropic_base_url"),
+            timeout=client_timeout,
+            max_retries=2,
         )
         self.sessions = SessionManager(ClaudeAiSession, model=conf().get("model") or "gpt-3.5-turbo")
         self.system_prompt = conf().get("character_desc")
@@ -88,51 +94,22 @@ class ClaudeAIBot(Bot):
             # 判断联网搜索状态
             is_searching = tool_state.get_search_state(session_id)
 
-            blender_mcp_enabled = conf().get("blender_mcp_enabled", False)
-            kling_mcp_enabled = conf().get("kling_mcp_enabled", False)
-            kling_ready = False
-            if kling_mcp_enabled:
-                from bot.kling.kling_mcp_auth import get_kling_oauth_manager
-                kling_ready = get_kling_oauth_manager().has_valid_tokens()
-
-            system_prompt = self.system_prompt or ""
-            if kling_mcp_enabled and kling_ready:
-                system_prompt += (
-                    "\n\n[MCP 工具调用重要规范]\n"
-                    "你已成功连接可灵（Kling）官方 MCP 服务，挂载了 text_to_video（文生视频）、image_to_video（图生视频）、"
-                    "text_to_image（文生图）等工具能力。\n"
-                    "1. 当用户明确要求制作、生成或想要查看视频/图片时，你可以根据对话内容自动润色分镜提示词并【直接调用对应的可灵工具】完成生成。\n"
-                    "2. 绝对不要引导或提示用户使用 '//' 或 '/' 等前缀（前缀为旧系统机制，当前已升级为全自然语言 Agent 调用）。\n"
-                    "3. 如果用户只是咨询视效技术、探讨剧本或闲聊，未明确要求生成，则只提供文字讨论，不触发工具。\n"
-                    "4. 调用 text_to_video 时，请根据用户意图合理填充 prompt、aspect_ratio、duration 等参数。\n"
-                    "5. 【关键——异步任务轮询】text_to_video、image_to_video、text_to_image 等生成类工具是异步的，"
-                    "调用后只会返回 generationId（任务ID），不会直接返回视频/图片文件。"
-                    "你**必须**紧接着调用 query_tasks 工具（传入该 generationId）来轮询任务状态，"
-                    "直到任务完成（status 为 succeed/finished）并获取到最终的视频/图片 URL。"
-                    "**不要在拿到 generationId 后就停下来给用户回复**，"
-                    "必须持续轮询 query_tasks 直到获取到最终文件 URL。"
-                    "如果 query_tasks 返回任务仍在处理中（status 为 submitted/processing/running），"
-                    "你应继续再次调用 query_tasks 进行轮询。\n"
-                    "6. 拿到最终视频/图片 URL 后，将 URL 包含在你的回复文本中，以便系统自动提取并下发给用户。\n"
-                    "7. 用户上传或连续发送的参考图会在消息中附带“可灵公网图片地址”。图生视频或多图参考时，"
-                    "必须将这些地址直接填入相应 Kling 工具的图片 URL 参数，绝不能要求用户再次提供 http/https 链接。\n"
-                    "8. 用户上传或引用的视频会在消息中附带“可灵公网视频地址”。需要基于该视频进行动作控制、"
-                    "视频参考或视频编辑时，必须将此地址直接填入 motion_control、omni_ref_video 或其他对应 Kling 工具的"
-                    "视频 URL 参数；绝不能忽略该地址或要求用户再次提供链接。"
-                )
+            has_mcp = (
+                conf().get("blender_mcp_enabled", False)
+                or conf().get("kling_mcp_enabled", False)
+                or conf().get("unreal_mcp_enabled", False)
+            )
 
             create_kwargs = dict(
                 model=self.model,
-                max_tokens=1000,
+                max_tokens=4096 if has_mcp else 1000,
                 temperature=0.0,
-                system=system_prompt,
+                system=self.system_prompt or "",
                 messages=claude_message
             )
 
-            if blender_mcp_enabled or (kling_mcp_enabled and kling_ready):
-                # MCP 模式下增大 max_tokens，因为多轮工具调用需要更多输出空间
-                create_kwargs["max_tokens"] = 4096
-                return self._chat_with_mcp(create_kwargs, session_id)
+            if has_mcp:
+                return self._chat_with_mcp(create_kwargs, session_id, current_content)
             
             if is_searching:
                 create_kwargs["tools"] = [
@@ -188,17 +165,42 @@ class ClaudeAIBot(Bot):
                 return Reply(ReplyType.TEXT, reply_content)
 
         except Exception as e:
-            logger.error("[{}] fetch reply error, {}".format(self.Model_ID, e))
-            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] {e}")
+            if self._is_timeout_error(e):
+                logger.warning(f"[{self.Model_ID}] fetch reply timeout: {e}")
+                return Reply(ReplyType.TEXT, "网络忙，请稍后重试")
+            real_err = self._unwrap_exception(e)
+            logger.error("[{}] fetch reply error, {}".format(self.Model_ID, real_err))
+            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] {real_err}")
 
-    def _chat_with_blender_mcp(self, create_kwargs, session_id):
-        return self._chat_with_mcp(create_kwargs, session_id)
+    @staticmethod
+    def _is_timeout_error(e: BaseException) -> bool:
+        """递归检查异常或 ExceptionGroup 是否包含超时错误（连接超时、请求超时等）。"""
+        if isinstance(e, (APITimeoutError, httpx.TimeoutException, TimeoutError)):
+            return True
+        if hasattr(e, "exceptions"):
+            for sub in getattr(e, "exceptions", []):
+                if ClaudeAIBot._is_timeout_error(sub):
+                    return True
+        if getattr(e, "__cause__", None) and ClaudeAIBot._is_timeout_error(e.__cause__):
+            return True
+        if getattr(e, "__context__", None) and ClaudeAIBot._is_timeout_error(e.__context__):
+            return True
+        msg = str(e).lower()
+        return "timed out" in msg or "timeout" in msg
 
-    def _chat_with_mcp(self, create_kwargs, session_id):
-        """在一条 Claude 消息内执行完整的 MCP 工具调用循环（支持 Blender MCP 与 Kling MCP）。"""
+    @staticmethod
+    def _unwrap_exception(e: BaseException) -> BaseException:
+        """从 ExceptionGroup 中解包出核心子异常。"""
+        curr = e
+        while hasattr(curr, "exceptions") and curr.exceptions:
+            curr = curr.exceptions[0]
+        return curr
+
+    def _chat_with_mcp(self, create_kwargs, session_id, current_content=None):
+        """通过 MCPHub 在一条 Claude 消息内执行完整的 MCP 工具调用循环。"""
         try:
             reply_content, output_tokens, video_info = asyncio.run(
-                self._run_mcp_chat(create_kwargs, session_id)
+                self._run_mcp_chat(create_kwargs, session_id, current_content)
             )
             self.sessions.session_reply(reply_content, session_id, output_tokens)
             logger.info(
@@ -206,93 +208,45 @@ class ClaudeAIBot(Bot):
                 f"session_id={session_id}, tokens={output_tokens}"
             )
 
-            # 如果检测到生成了可灵视频，作为视频回复下发。
-            # session_reply 已保存本轮文本；不要调用通用 session_inject_media：其
-            # video_url/image_url 块属于其他模型的格式，Claude Messages API 不接受。
             if video_info and video_info.get("video_url"):
                 video_url = video_info["video_url"]
                 duration = video_info.get("duration", 5)
-
-                # VIDEO_URL 是单一 Reply 类型，不能同时再返回一个 TEXT Reply。
-                # 把 Claude 的最终文本随视频一并带到 channel，由支持的通道先发送文本、
-                # 再发送视频；保留前两个元素以兼容既有 VIDEO_URL 消费者。
-                from bot.kling.kling_mcp_client import KlingMCPClient
-
-                clean_reply_content = KlingMCPClient.strip_media_links(reply_content)
+                from bot.mcp.hub import MCPHub
+                clean_reply_content = MCPHub.strip_media_links(reply_content)
                 return Reply(ReplyType.VIDEO_URL, (duration, video_url, clean_reply_content))
 
             return Reply(ReplyType.TEXT, reply_content)
         except Exception as e:
-            logger.exception(f"[{self.Model_ID}] MCP request failed: {e}")
-            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] MCP 调用失败：{e}")
+            if self._is_timeout_error(e):
+                logger.warning(f"[{self.Model_ID}] MCP request timeout: {e}")
+                return Reply(ReplyType.TEXT, "网络忙，请稍后重试")
+            real_err = self._unwrap_exception(e)
+            logger.exception(f"[{self.Model_ID}] MCP request failed: {real_err}")
+            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] MCP 调用失败：{real_err}")
 
-    async def _run_mcp_chat(self, create_kwargs, session_id):
-        """聚合已启用的 MCP Server（Blender stdio、Kling Streamable HTTP 等）供 Claude 在本轮请求中按需调用。"""
-        import contextlib
-        try:
-            from mcp import ClientSession, StdioServerParameters
-            from mcp.client.stdio import stdio_client
-        except ImportError as e:
-            raise RuntimeError("缺少 MCP 客户端依赖，请执行 pip install -r requirements.txt") from e
+    async def _run_mcp_chat(self, create_kwargs, session_id, current_content=None):
+        """通过 MCPHub 聚合所有启用的 MCP 工具（Blender, Kling, Unreal），由 Claude 调度执行。"""
+        from bot.mcp.hub import mcp_hub
 
-        max_rounds = int(conf().get("blender_mcp_max_tool_rounds", 20))
         messages = list(create_kwargs["messages"])
-        kling_reference_urls = []
+        context = {"session_id": session_id, "messages": messages}
 
-        async with contextlib.AsyncExitStack() as stack:
-            # mcp_tools: tool_name -> (session, is_kling)
-            mcp_tools = {}
-            tool_definitions = []
+        async with mcp_hub.session(session_id=session_id, context=context) as mcp:
+            if not mcp.has_tools:
+                logger.info(f"[{self.Model_ID}] 无可用 MCP 工具，回退为普通会话")
+                response = self._create_claude_message(create_kwargs, current_content)
+                reply_content = "".join([b.text for b in response.content if hasattr(b, "text")])
+                return reply_content, getattr(getattr(response, "usage", None), "output_tokens", 100), None
 
-            # 1. 初始化 Blender MCP (若启用)
-            if conf().get("blender_mcp_enabled"):
-                try:
-                    from bot.blender.blender_mcp_client import BlenderMCPClient
-                    blender_client = BlenderMCPClient()
-                    blender_connection = await stack.enter_async_context(blender_client.connect())
-                    blender_tools = blender_connection.tool_definitions()
-                    for tool in blender_tools:
-                        mcp_tools[tool["name"]] = (blender_connection, False)
-                    tool_definitions.extend(blender_tools)
-                    logger.info(
-                        f"[{self.Model_ID}] Blender MCP 已连接并载入工具: "
-                        f"{[tool['name'] for tool in blender_tools]}"
-                    )
-                except Exception as e:
-                    logger.exception(f"[{self.Model_ID}] 初始化 Blender MCP 失败: {e}")
-                    raise RuntimeError(f"Blender MCP 服务连接失败：{e}")
+            # 追加 Hub 聚合 instructions 到系统提示词
+            if mcp.instructions:
+                current_system = create_kwargs.get("system") or ""
+                create_kwargs["system"] = (current_system + "\n\n" + mcp.instructions).strip()
 
-            # 2. 初始化 Kling MCP (若启用且已完成授权)
-            from bot.kling.kling_mcp_auth import get_kling_oauth_manager
-            if conf().get("kling_mcp_enabled") and get_kling_oauth_manager().has_valid_tokens():
-                try:
-                    from bot.kling.kling_mcp_client import KlingMCPClient
-
-                    # 用户可能先发参考图、再确认生成，因此从最近的历史消息提取图片地址。
-                    kling_reference_urls = KlingMCPClient.extract_reference_urls(messages)
-                    kling_client = KlingMCPClient()
-                    kling_connection = await stack.enter_async_context(kling_client.connect())
-                    kling_tools = kling_connection.tool_definitions()
-                    for tool in kling_tools:
-                        mcp_tools[tool["name"]] = (kling_connection, True)
-                    tool_definitions.extend(kling_tools)
-                    logger.info(
-                        f"[{self.Model_ID}] Kling MCP 已连接并载入工具: "
-                        f"{[tool['name'] for tool in kling_tools]}"
-                    )
-                except Exception as e:
-                    logger.exception(f"[{self.Model_ID}] 初始化 Kling MCP 失败: {e}")
-                    raise RuntimeError(f"可灵 MCP 服务连接失败：{e}")
-
-            if not mcp_tools:
-                raise RuntimeError("未启用或未获取到任何有效的 MCP 工具")
+            tool_definitions = mcp.tool_definitions
+            max_rounds = mcp.max_tool_rounds
 
             captured_video = None
-            # 跟踪可灵异步生成任务：记录 generationId 和最后一次 query_tasks 的参数
-            _kling_pending_generation_id = None
-            _kling_last_query_args = None
-            _kling_generation_duration = 5  # 默认时长
-
             for round_idx in range(max_rounds):
                 response = self.client.messages.create(
                     **dict(create_kwargs, messages=messages, tools=tool_definitions)
@@ -303,138 +257,28 @@ class ClaudeAIBot(Bot):
                     if block.get("type") == "tool_use"
                 ]
 
-                # ── 关键：Claude 没有发起 tool_use，但我们知道有未完成的 Kling 生成任务 ──
                 if not tool_uses:
-                    if _kling_pending_generation_id and not captured_video and "query_tasks" in mcp_tools:
-                        # Claude 放弃轮询了，但视频还没拿到 → 代码层面强制接管轮询
-                        logger.info(
-                            f"[{self.Model_ID}] Claude 停止了 tool_use，但 Kling 任务 "
-                            f"{_kling_pending_generation_id} 尚未完成，启动代码层强制轮询..."
-                        )
-                        final_text = self._extract_claude_text(response_blocks)
-                        output_tokens = response.usage.output_tokens
-
-                        target_connection, _ = mcp_tools["query_tasks"]
-                        captured_video = await target_connection.poll_task(
-                            _kling_pending_generation_id,
-                            duration=_kling_generation_duration,
-                        )
-
-                        return final_text, output_tokens, captured_video
-                    else:
-                        return self._extract_claude_text(response_blocks), response.usage.output_tokens, captured_video
+                    captured_video = await mcp.finalize()
+                    final_text = self._extract_claude_text(response_blocks)
+                    output_tokens = response.usage.output_tokens
+                    return final_text, output_tokens, captured_video
 
                 messages.append({"role": "assistant", "content": response_blocks})
                 tool_results = []
                 for tool_use in tool_uses:
                     tool_name = tool_use["name"]
-                    if tool_name not in mcp_tools:
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tool_use["id"],
-                            "is_error": True,
-                            "content": f"未知的 MCP 工具：{tool_name}",
-                        })
-                        continue
-
-                    target_session, is_kling = mcp_tools[tool_name]
-
-                    # omni_ref_video 是多图全能参考入口。Claude 偶尔会只把部分
-                    # 参考图填入工具参数；此时不要让可灵提交一个错误的任务，而是把
-                    # 缺失信息作为 tool_result 返给 Claude，促使它补齐后重试。
-                    if is_kling and tool_name == "omni_ref_video" and len(kling_reference_urls) > 1:
-                        tool_input = tool_use.get("input", {})
-                        submitted_urls = KlingMCPClient.extract_http_urls(tool_input)
-                        missing_urls = KlingMCPClient.missing_reference_urls(
-                            tool_input,
-                            kling_reference_urls,
-                        )
-                        logger.info(
-                            "[%s] Kling omni_ref_video reference URLs: expected=%s, submitted=%s",
-                            self.Model_ID,
-                            len(kling_reference_urls),
-                            len(submitted_urls),
-                        )
-                        if missing_urls:
-                            logger.warning(
-                                "[%s] reject incomplete omni_ref_video references: missing=%s",
-                                self.Model_ID,
-                                len(missing_urls),
-                            )
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tool_use["id"],
-                                "is_error": True,
-                                "content": (
-                                    "本轮收到 %s 张用户参考图，但 omni_ref_video 工具参数只包含 %s 张。"
-                                    "请重新调用 omni_ref_video，并将每一张“可灵公网图片地址”全部原样填入"
-                                    "多图参考参数后再提交。"
-                                ) % (len(kling_reference_urls), len(kling_reference_urls) - len(missing_urls)),
-                            })
-                            continue
-
-                    # 对可灵 query_tasks 轮询请求，加入等待间隔（视频生成需要 1-3+ 分钟）
-                    if is_kling and tool_name == "query_tasks":
-                        poll_interval = 15  # 秒
-                        logger.info(f"[{self.Model_ID}] 可灵任务轮询中，等待 {poll_interval} 秒后查询...")
-                        await asyncio.sleep(poll_interval)
-
-                    result = await target_session.call_tool(tool_name, tool_use.get("input", {}))
-                    from bot.blender.blender_mcp_client import BlenderMCPClient
-                    serialized_res = (
-                        KlingMCPClient.serialize_result(result)
-                        if is_kling
-                        else BlenderMCPClient.serialize_result(result)
-                    )
-
-                    if is_kling:
-                        video_url, cover_url = KlingMCPClient.extract_video_info(serialized_res)
-                        if video_url:
-                            captured_video = {
-                                "video_url": video_url,
-                                "cover_url": cover_url,
-                                "duration": tool_use.get("input", {}).get("duration", 5),
-                            }
-                            logger.info(f"[{self.Model_ID}] 捕获到可灵生成视频: {video_url}")
-
-                        # 追踪全部可灵异步生成工具（全能参考 omni_ref_video 也会异步返回任务 ID）。
-                        if tool_name in (
-                            "text_to_video", "image_to_video", "omni_ref_video",
-                            "motion_control", "text_to_image", "image_to_image",
-                        ) and not video_url:
-                            generation_id = KlingMCPClient.extract_generation_id(serialized_res)
-                            if generation_id:
-                                _kling_pending_generation_id = generation_id
-                                _kling_generation_duration = tool_use.get("input", {}).get("duration", 5)
-                                logger.info(f"[{self.Model_ID}] 追踪到可灵异步任务 generationId={_kling_pending_generation_id}")
-
-                        # 记录 query_tasks 的参数，以便代码层强制轮询时复用
-                        if tool_name == "query_tasks":
-                            _kling_last_query_args = tool_use.get("input", {})
-                            # 即使生成工具响应格式变化无法解析，也能从 Claude 发出的
-                            # query_tasks 入参恢复任务 ID，保证 Claude 提前结束时可接管轮询。
-                            if not video_url and not _kling_pending_generation_id:
-                                _kling_pending_generation_id = KlingMCPClient.extract_generation_id(
-                                    _kling_last_query_args
-                                )
-                                if _kling_pending_generation_id:
-                                    logger.info(
-                                        f"[{self.Model_ID}] 从 query_tasks 入参恢复可灵任务 "
-                                        f"generationId={_kling_pending_generation_id}"
-                                    )
-                            # 如果 query_tasks 返回了视频，清除 pending 标记
-                            if video_url:
-                                _kling_pending_generation_id = None
-
+                    tool_input = tool_use.get("input", {})
+                    serialized_res, is_error = await mcp.call_tool(tool_name, tool_input)
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_use["id"],
-                        "is_error": bool(getattr(result, "is_error", getattr(result, "isError", False))),
+                        "is_error": is_error,
                         "content": serialized_res,
                     })
+
                 messages.append({"role": "user", "content": tool_results})
 
-        raise RuntimeError(f"MCP 工具调用超过最大轮次（{max_rounds}）")
+            raise RuntimeError(f"MCP 工具调用超过最大轮次（{max_rounds}）")
 
     @staticmethod
     def _serialize_anthropic_blocks(blocks):
@@ -517,7 +361,7 @@ class ClaudeAIBot(Bot):
             block.get("text", "") for block in blocks
             if block.get("type") == "text"
         )
-        return text or "Blender 操作已完成。"
+        return text or "操作已完成。"
         
     def _build_current_content(self, query: str, session_id: str) -> list:
         """

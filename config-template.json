@@ -39,5 +39,6 @@
   "linkai_api_key": "",
   "linkai_app_code": "",
   "kling_mcp_enabled": false,
-  "blender_mcp_enabled": false
+  "blender_mcp_enabled": false,
+  "unreal_mcp_enabled": false
 }

@@ -80,17 +80,31 @@ available_setting = {
     "anthropic_base_url": "",
     "anthropic_api_cookie": "",
     "anthropic_uuid": "",
+    "anthropic_timeout": 300,  # Claude API 总请求超时时间（秒）
+    "anthropic_connect_timeout": 15,  # Claude API 建立连接/握手超时时间（秒）
     # Blender MCP（通过 Claude Messages API 调用本地 stdio Server）
     "blender_mcp_enabled": False,
     "blender_mcp_command": "",
     "blender_mcp_args": ["-m", "blmcp"],
     "blender_mcp_cwd": "",
     "blender_mcp_max_tool_rounds": 8,
+    "blender_mcp_lock_timeout": 60,  # Blender 进程独占等待超时秒数
+    # 公共 MCP 配置
+    "mcp_tool_retries": 3,  # MCP 工具调用重试次数
+    "mcp_max_result_chars": 40000,  # 单次 MCP 工具结果最大字符截断限制
     # 可灵 MCP（通过 Streamable HTTP 调用官方 https://klingai.com/mcp 服务）
     "kling_mcp_enabled": False,
     "kling_mcp_server_url": "https://klingai.com/mcp",
     "kling_mcp_redirect_port": 3344,
     "kling_mcp_max_tool_rounds": 20,
+    # Unreal Engine MCP（连接本机 Unreal 编辑器内置的 Streamable HTTP 服务，编辑器需先启动）
+    "unreal_mcp_enabled": False,
+    "unreal_mcp_url": "http://127.0.0.1:8000/mcp",
+    "unreal_mcp_allowed_users": [],  # 允许使用 Unreal 的 session_id 列表；留空表示不限制
+    "unreal_mcp_max_tool_rounds": 50,  # 单条消息内最多工具调用轮数
+    "unreal_mcp_max_result_chars": 40000,  # 单次工具结果回传给模型的最大字符数（list_toolsets 完整输出约 3 万）
+    "unreal_mcp_lock_timeout": 120,  # 等待其他会话释放 Unreal 的最长秒数
+    "unreal_mcp_busy_retries": 3,  # 编辑器忙（如编译着色器）时的自动重试次数
     # 通义千问API, 获取方式查看文档 https://help.aliyun.com/document_detail/2587494.html
     "qwen_access_key_id": "",
     "qwen_access_key_secret": "",
