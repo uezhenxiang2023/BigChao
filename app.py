@@ -3,6 +3,10 @@
 import os
 import signal
 import sys
+import warnings
+
+# 过滤 Python 3.14 下部分第三方 SDK 引用旧版 Pydantic 兼容层的提示性警告
+warnings.filterwarnings("ignore", category=UserWarning, message=".*Core Pydantic V1 functionality.*")
 
 from channel import channel_factory
 from common import const
