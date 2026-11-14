@@ -36,7 +36,9 @@ def dereference_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
             
             clean_dict = {}
             for k, v in node.items():
-                # 过滤可能导致 Gemini 校验失败的元数据字段
+                # 过滤可能导致 Gemini 校验失败的元数据字段与不兼容字段
+                if k in ("additionalProperties", "additional_properties", "$schema", "$id"):
+                    continue
                 if k in ("title", "default") and isinstance(v, (dict, list)):
                     continue
                 clean_dict[k] = resolve_ref(v, depth + 1)
