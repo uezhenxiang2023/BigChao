@@ -7,7 +7,12 @@ class GoogleGeminiSession(Session):
         super().__init__(session_id, system_prompt)
         self.model = model
         self.last_total_tokens = None
+        self.last_interaction_id = None
         self.reset()
+
+    def reset(self):
+        super().reset()
+        self.last_interaction_id = None
 
     def calc_tokens(self):
         """

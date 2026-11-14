@@ -43,7 +43,7 @@ def create_bot(bot_type):
         from bot.ali.ali_qwen_bot import AliQwenBot
         return AliQwenBot()
 
-    elif bot_type == const.GEMINI:
+    elif bot_type == const.GEMINI or (isinstance(bot_type, str) and bot_type.lower().startswith("gemini")):
         from bot.gemini.google_gemini_bot import GoogleGeminiBot
         return GoogleGeminiBot()
     

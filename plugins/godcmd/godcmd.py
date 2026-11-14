@@ -411,16 +411,20 @@ class Godcmd(Plugin):
                     ok, result = True, text
                     logger.info(f'{text}, requester = {user}')
                 elif cmd == "print":
-                    # 使用用户特定的剧本排版状态
-                    if tool_state.get_print_state(user):
-                        text = "剧本排版功能已关闭，可以在消息框输入#print或点击输入框上方的‘剧本排版’菜单随时开启。"
-                    else:
-                        text = "剧本排版功能已开启,请先在输入框中点击“+”号上传pdf格式的剧本，然后在对话框中输入编剧姓名。\n我会按照好莱坞编剧工会的标准格式进行排版，让您的剧本看起来更专业、读起来更舒服，大大提升获得‘绿灯’的几率。"
-                    # 切换用户的图片编辑状态
                     tool_state.toggle_printing(user)
-                    status = tool_state.get_print_state(user)
+                    is_printing = tool_state.get_print_state(user)
+                    conf()["script_breakdown_mcp_enabled"] = is_printing
+                    from bot.script_breakdown.script_breakdown_mcp_client import ScriptBreakdownMCPClient
+                    is_ready = ScriptBreakdownMCPClient().is_ready()
+                    if is_printing:
+                        if is_ready:
+                            text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n大超子将调用 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
+                        else:
+                            text = "[INFO]\n剧本排版功能已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n大超子将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
+                    else:
+                        text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已关闭，可以在消息框输入 #print 或点击输入框上方的‘剧本排版’菜单随时开启。"
                     ok, result = True, text
-                    logger.info(f'rinting_tasus={status},{text}, requester = {user}')
+                    logger.info(f'printing_status={is_printing}, is_ready={is_ready}, requester={user}')
                 elif cmd == "breakdown":
                     # 使用用户特定的顺分场状态
                     if tool_state.get_breakdown_state(user):

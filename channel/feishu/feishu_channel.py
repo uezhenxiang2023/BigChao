@@ -384,16 +384,37 @@ class FeiShuChanel(ChatChannel):
 
     def print(self, toUserName) -> None:
         """
-        This function handles the print menu
+        This function handles the print menu (剧本排版 FastMCP 服务切换)
         """
-        if tool_state.get_print_state(toUserName):
-            text = "[INFO]\n剧本排版功能已关闭，可以在消息框输入#print或点击输入框上方的‘剧本排版’菜单随时开启。"
-        else:
-            text = "[INFO]\n剧本排版功能已开启,请先在输入框中点击“+”号上传pdf格式的剧本，然后在对话框中输入编剧姓名。\n我会按照好莱坞编剧工会的标准格式进行排版，让您的剧本看起来更专业、读起来更舒服，大大提升获得‘绿灯’的几率。"
+        from bot.script_breakdown.script_breakdown_mcp_client import ScriptBreakdownMCPClient
+
         tool_state.toggle_printing(toUserName)
-        status = tool_state.get_print_state(toUserName)
+        is_printing = tool_state.get_print_state(toUserName)
+
+        # 点击菜单时，同步将 FastMCP 开关设为当前排版状态
+        conf()["script_breakdown_mcp_enabled"] = is_printing
+        client = ScriptBreakdownMCPClient()
+        is_ready = client.is_ready()
+
+        if is_printing:
+            if is_ready:
+                text = (
+                    "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已开启！\n"
+                    "请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n"
+                    "大超子将调用本地 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
+                )
+            else:
+                text = (
+                    "[INFO]\n剧本排版功能已开启！\n"
+                    "请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n"
+                    "大超子将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
+                )
+            logger.info(f'[Lark] enable Script Breakdown MCP, is_ready={is_ready}, requester={toUserName}')
+        else:
+            text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已关闭，可以在消息框输入 #print 或点击菜单随时重新开启。"
+            logger.info(f'[Lark] disable Script Breakdown MCP, requester={toUserName}')
+
         self.send_text(text, toUserName)
-        logger.info(f'[Lark]printing_stasus={status},{text} requester={toUserName}')
 
     def breakdown(self, toUserName) -> None:
         """

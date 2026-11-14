@@ -105,6 +105,15 @@ available_setting = {
     "unreal_mcp_max_result_chars": 40000,  # 单次工具结果回传给模型的最大字符数（list_toolsets 完整输出约 3 万）
     "unreal_mcp_lock_timeout": 120,  # 等待其他会话释放 Unreal 的最长秒数
     "unreal_mcp_busy_retries": 3,  # 编辑器忙（如编译着色器）时的自动重试次数
+    # Script Breakdown MCP（剧本拆解与标准化排版 FastMCP 本地服务）
+    "script_breakdown_mcp_enabled": False,
+    "script_breakdown_mcp_dir": "/Users/fu/work/MCP/script_breakdown_mcp",  # FastMCP 服务根目录
+    "script_breakdown_output_dir": "",  # 生成 .docx 剧本文件的输出目录，为空时默认 ~/Documents/Script_Breakdown
+    "script_breakdown_mcp_command": "uv",
+    "script_breakdown_mcp_args": [],
+    "script_breakdown_mcp_cwd": "",
+    "script_breakdown_mcp_max_tool_rounds": 15,
+    "script_breakdown_mcp_lock_timeout": 60,
     # 通义千问API, 获取方式查看文档 https://help.aliyun.com/document_detail/2587494.html
     "qwen_access_key_id": "",
     "qwen_access_key_secret": "",
@@ -114,6 +123,7 @@ available_setting = {
     # Google Gemini Api Key
     "gemini_api_key": "", # Free tier
     "gemini_api_key_paid": "", # Paid tier 
+    "gemini_use_interactions_api": False,  # 是否使用 Google Gemini Interactions API 
     # Volcengine ARK 配置
     "ark_api_key": "",
     "ark_use_responses_api": False,  # Ark 文本/图片/视频理解及工具调用是否使用 Responses API

@@ -10,6 +10,7 @@ from bot.mcp.provider import MCPProvider, safe_conf_get, serialize_mcp_result
 from bot.mcp.providers.blender import BlenderProvider
 from bot.mcp.providers.kling import KlingProvider
 from bot.mcp.providers.unreal import UnrealProvider
+from bot.mcp.providers.script_breakdown import ScriptBreakdownProvider
 from common.log import logger
 from config import conf
 
@@ -150,6 +151,7 @@ class MCPHub:
             BlenderProvider(),
             KlingProvider(),
             UnrealProvider(),
+            ScriptBreakdownProvider(),
         ]
         # 并发锁字典：provider_name -> threading.Lock
         self._provider_locks: Dict[str, threading.Lock] = {}

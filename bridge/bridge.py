@@ -34,7 +34,7 @@ class Bridge(object):
             self.btype["chat"] = const.XUNFEI
         if self.model_type in [const.QWEN]:
             self.btype["chat"] = const.QWEN
-        if self.model_type in (const.GEMINI_1_PRO_LIST + const.GEMINI_15_PRO_LIST + const.GEMINI_15_FLASH_LIST + const.GEMINI_GENAI_SDK):
+        if self.model_type in (const.GEMINI_1_PRO_LIST + const.GEMINI_15_PRO_LIST + const.GEMINI_15_FLASH_LIST + const.GEMINI_GENAI_SDK) or (isinstance(self.model_type, str) and self.model_type.lower().startswith("gemini")):
             self.btype["chat"] = const.GEMINI
         if self.model_type in [const.OPEN_AI_ASSISTANT]:
             self.btype["chat"] = const.OPEN_AI_ASSISTANT
@@ -72,7 +72,7 @@ class Bridge(object):
                 logger.info("create bot {}[{}] for {}".format(self.btype[typename], conf().get("voice_to_text_model"), typename))
                 self.bots[typename] = create_voice(self.btype[typename])
             elif typename == "chat":
-                logger.info("create bot {}[{}] for {}".format(self.btype[typename], self.model_type.upper(), typename))
+                logger.info("create bot {}[{}] for {}".format(self.btype[typename], (self.model_type or "").upper(), typename))
                 self.bots[typename] = create_bot(self.btype[typename])
             elif typename == "translate":
                 self.bots[typename] = create_translator(self.btype[typename])

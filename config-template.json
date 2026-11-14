@@ -40,5 +40,8 @@
   "linkai_app_code": "",
   "kling_mcp_enabled": false,
   "blender_mcp_enabled": false,
-  "unreal_mcp_enabled": false
+  "unreal_mcp_enabled": false,
+  "script_breakdown_mcp_enabled": false,
+  "script_breakdown_mcp_dir": "",
+  "script_breakdown_output_dir": ""
 }

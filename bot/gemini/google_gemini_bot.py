@@ -7,6 +7,7 @@ Google gemini bot
 # encoding:utf-8
 
 import base64
+import asyncio
 import os, time
 import shutil
 import tempfile
@@ -25,6 +26,12 @@ from bot.gemini.gemini_common import (
 )
 from bot.gemini.gemini_error import format_gemini_error, is_gemini_sdk_error
 from bot.gemini.google_gemini_session import _gemini_sessions
+from bot.gemini.gemini_mcp import (
+    mcp_tool_definitions_to_gemini,
+    mcp_tool_definitions_to_interactions_tools,
+    format_contents_for_interactions,
+)
+from bot.mcp.provider import safe_conf_get
 
 from bridge.context import ContextType, Context
 from bridge.reply import Reply, ReplyType
@@ -483,7 +490,7 @@ class GoogleGeminiBot(Bot):
 
             if context.type == ContextType.TEXT:
                 logger.info(f"[{self.Model_ID}] query={query}, requester={session_id}")
-                if self.model not in const.GEMINI_GENAI_SDK:
+                if self.model not in const.GEMINI_GENAI_SDK and not (isinstance(self.model, str) and self.model.startswith("gemini")):
                     logger.warning(f"[{self.Model_ID}] Unsupported Gemini model")
                     return Reply(ReplyType.ERROR, f"[{self.Model_ID}] Unsupported Gemini model")
 
@@ -492,6 +499,15 @@ class GoogleGeminiBot(Bot):
                 resquest_contents, request_warnings = self._build_request_contents(query, session_id)
                 if len(resquest_contents) == 1 and request_warnings:
                     raise ValueError("\n".join(request_warnings))
+
+                if self._use_interactions_api():
+                    return self._reply_with_interactions(query, context, session_id, resquest_contents, request_warnings)
+
+                if self._is_mcp_enabled() and not self.stream:
+                    mcp_reply = self._chat_with_mcp(query, context, session_id, resquest_contents, request_warnings)
+                    if mcp_reply is not None:
+                        return mcp_reply
+
                 if tool_state.get_print_state(session_id):
                     response = user_chat.send_message(resquest_contents, config=self.print_config)
                     tool_state.toggle_printing(session_id)
@@ -627,6 +643,393 @@ class GoogleGeminiBot(Bot):
                 response = user_chat.send_message(function_response_parts)
                 continue
             function_calling = False
+        return response, function_response
+
+    def _use_interactions_api(self) -> bool:
+        return bool(safe_conf_get("gemini_use_interactions_api", False))
+
+    def _build_interactions_generation_config(self) -> dict:
+        allowed = {
+            'image_config', 'max_output_tokens', 'seed', 'speech_config',
+            'stop_sequences', 'temperature', 'thinking_level',
+            'thinking_summaries', 'tool_choice', 'top_p',
+            'transcription_config', 'video_config'
+        }
+        gen_cfg = {}
+        for k, v in (self.generation_config or {}).items():
+            if k in allowed and v is not None:
+                gen_cfg[k] = v
+        return gen_cfg
+
+    def _reply_with_interactions(self, query, context, session_id, request_contents, request_warnings):
+        try:
+            return asyncio.run(
+                self._async_reply_with_interactions(query, context, session_id, request_contents, request_warnings)
+            )
+        except Exception as e:
+            logger.error(f"[{self.Model_ID}] Interactions API 执行异常: {e}")
+            if is_gemini_sdk_error(e):
+                return Reply(ReplyType.ERROR, format_gemini_error(e, self.model))
+            return Reply(ReplyType.ERROR, f"[{self.Model_ID}] {e}")
+
+    async def _async_reply_with_interactions(self, query, context, session_id, request_contents, request_warnings):
+        from bot.mcp.hub import mcp_hub
+
+        client = self._get_client_by_model(self.model)
+        session = self.sessions.build_session(session_id)
+        prev_id = getattr(session, "last_interaction_id", None)
+
+        mcp_context = {"session_id": session_id}
+        async with mcp_hub.session(session_id=session_id, context=mcp_context) as mcp:
+            # 1. 组装输入内容
+            formatted_input = format_contents_for_interactions(request_contents)
+
+            # 2. 组装工具列表 (Interactions API 格式)
+            interactions_tools = []
+            if mcp.has_tools:
+                interactions_tools.extend(mcp_tool_definitions_to_interactions_tools(mcp.tool_definitions))
+
+            # 本地内置函数 (场景拆解与资产拆解)
+            local_declarations = [
+                self.screenplay_scenes_breakdown_schema,
+                self.screenplay_assets_breakdown_schema,
+            ]
+            # 如果 MCP 中没有 screenplay_formatter，则添加本地声明
+            if not any(t.get("name") == "screenplay_formatter" for t in interactions_tools):
+                local_declarations.append(self.screenplay_formatter)
+
+            for decl in local_declarations:
+                decl_dict = decl.to_json_dict() if hasattr(decl, "to_json_dict") else {}
+                interactions_tools.append({
+                    "type": "function",
+                    "name": decl.name,
+                    "description": decl.description or "",
+                    "parameters": decl_dict.get("parameters") or {},
+                })
+
+            # 3. 组装系统提示词
+            system_instruction = self.system_prompt or ""
+            if mcp.instructions:
+                system_instruction = (system_instruction + "\n\n" + mcp.instructions).strip()
+
+            is_printing = tool_state.get_print_state(session_id)
+            is_breakdown = tool_state.get_breakdown_state(session_id)
+            is_searching = tool_state.get_search_state(session_id)
+
+            if is_printing:
+                formatter_tools = [t for t in interactions_tools if t.get("name") == "screenplay_formatter"]
+                if formatter_tools:
+                    interactions_tools = formatter_tools
+                system_instruction = (system_instruction + "\n\n用户已在菜单中开启【剧本排版】功能，请直接调用 `screenplay_formatter` 工具对提供的剧本内容进行工业级标准化排版。").strip()
+                tool_state.toggle_printing(session_id)
+            elif is_breakdown:
+                breakdown_tools = [t for t in interactions_tools if t.get("name") in ("screenplay_scenes_breakdown", "screenplay_assets_breakdown")]
+                if breakdown_tools:
+                    interactions_tools = breakdown_tools
+                tool_state.toggle_breakdowning(session_id)
+            elif is_searching:
+                interactions_tools.append({"type": "google_search"})
+
+            current_input = formatted_input
+            current_prev_id = prev_id
+            max_rounds = mcp.max_tool_rounds if mcp.has_tools else 15
+            round_idx = 0
+            final_interaction = None
+            captured_local_response = None
+            int_gen_config = self._build_interactions_generation_config()
+
+            while round_idx < max_rounds:
+                round_idx += 1
+                kwargs = {
+                    "model": self.model,
+                    "input": current_input,
+                    "previous_interaction_id": current_prev_id,
+                    "tools": interactions_tools if interactions_tools else None,
+                }
+                if int_gen_config:
+                    kwargs["generation_config"] = int_gen_config
+                if not current_prev_id and system_instruction:
+                    kwargs["system_instruction"] = system_instruction
+
+                interaction = client.interactions.create(**kwargs)
+                final_interaction = interaction
+                current_prev_id = interaction.id
+
+                # 提取模型本次返回中的所有工具调用步骤
+                steps = getattr(interaction, "steps", []) or []
+                call_steps = [
+                    s for s in steps
+                    if (isinstance(s, dict) and s.get("type") == "function_call") or
+                       (getattr(s, "type", None) == "function_call")
+                ]
+
+                if not call_steps:
+                    # 没有工具调用，Agent 任务结束
+                    break
+
+                # 执行工具调用
+                step_results = []
+                for step in call_steps:
+                    step_id = step.get("id") if isinstance(step, dict) else getattr(step, "id", None)
+                    fn_name = step.get("name") if isinstance(step, dict) else getattr(step, "name", None)
+                    fn_args = step.get("arguments") if isinstance(step, dict) else getattr(step, "arguments", {})
+
+                    if mcp.has_tools and fn_name in mcp.tool_map:
+                        logger.info(f"[{self.Model_ID}][Interactions] 路由到 MCP 工具: {fn_name}")
+                        serialized_res, is_error = await mcp.call_tool(fn_name, fn_args)
+                        step_results.append({
+                            "type": "function_result",
+                            "call_id": step_id,
+                            "name": fn_name,
+                            "result": serialized_res,
+                            "is_error": is_error,
+                        })
+                    else:
+                        func = self.function_call_dicts.get(fn_name)
+                        if func:
+                            logger.info(f"[{self.Model_ID}][Interactions] 执行本地函数: {fn_name}")
+                            local_parts = func(session_id, fn_name, **fn_args)
+                            local_data = ""
+                            if local_parts:
+                                for part in local_parts:
+                                    if hasattr(part, "function_response") and part.function_response:
+                                        local_data = getattr(part.function_response, "response", "")
+                                        captured_local_response = local_data
+                                        break
+                            step_results.append({
+                                "type": "function_result",
+                                "call_id": step_id,
+                                "name": fn_name,
+                                "result": local_data or "执行成功",
+                                "is_error": False,
+                            })
+                        else:
+                            logger.warning(f"[{self.Model_ID}][Interactions] 未知工具: {fn_name}")
+                            step_results.append({
+                                "type": "function_result",
+                                "call_id": step_id,
+                                "name": fn_name,
+                                "result": f"Unknown tool: {fn_name}",
+                                "is_error": True,
+                            })
+
+                current_input = step_results
+
+            # 保存最新 interaction id 到 session
+            if final_interaction:
+                session.last_interaction_id = final_interaction.id
+
+            # 提取最终文本
+            output_text = getattr(final_interaction, "output_text", None)
+            if not output_text and final_interaction and hasattr(final_interaction, "steps"):
+                for s in reversed(final_interaction.steps):
+                    s_type = s.get("type") if isinstance(s, dict) else getattr(s, "type", None)
+                    if s_type == "model_output":
+                        content = s.get("content") if isinstance(s, dict) else getattr(s, "content", [])
+                        for c in content or []:
+                            if isinstance(c, dict) and c.get("type") == "text":
+                                output_text = c.get("text")
+                                break
+                            elif hasattr(c, "text"):
+                                output_text = getattr(c, "text", "")
+                                break
+                            elif getattr(c, "type", None) == "text":
+                                output_text = getattr(c, "text", "")
+                                break
+                    if output_text:
+                        break
+
+            final_text = output_text or "处理完成。"
+            reply_text = ("\n".join(request_warnings) + "\n\n" if request_warnings else "") + final_text
+
+            # 检查是否有捕获的视频 (如 Kling MCP 异步生成)
+            captured_video = await mcp.finalize()
+            if captured_video and captured_video.get("video_url"):
+                video_url = captured_video["video_url"]
+                duration = captured_video.get("duration", 5)
+                from bot.mcp.hub import MCPHub
+                clean_reply_text = MCPHub.strip_media_links(reply_text)
+                return Reply(ReplyType.VIDEO_URL, (duration, video_url, clean_reply_text))
+
+            # 检查是否有生成的文件 (MCP 产物或本地排版产物)
+            mcp_file_response = mcp.state.get("function_response")
+            if mcp_file_response:
+                return Reply(ReplyType.FILE, {
+                    'reply_text': reply_text,
+                    'function_response': mcp_file_response
+                })
+
+            if captured_local_response and isinstance(captured_local_response, dict) and "file_pathes" in captured_local_response:
+                return Reply(ReplyType.FILE, {
+                    'reply_text': reply_text,
+                    'function_response': captured_local_response
+                })
+
+            self.sessions.session_reply(final_text, session_id)
+            return Reply(ReplyType.TEXT, reply_text)
+
+    def _is_mcp_enabled(self) -> bool:
+        return any([
+            safe_conf_get("script_breakdown_mcp_enabled", False),
+            safe_conf_get("blender_mcp_enabled", False),
+            safe_conf_get("unreal_mcp_enabled", False),
+            safe_conf_get("kling_mcp_enabled", False),
+        ])
+
+    def _chat_with_mcp(self, query, context, session_id, request_contents, request_warnings):
+        try:
+            return asyncio.run(
+                self._run_mcp_chat(query, context, session_id, request_contents, request_warnings)
+            )
+        except Exception as e:
+            logger.warning(f"[{self.Model_ID}] MCP chat 异常，将回退为普通流程: {e}")
+            return None
+
+    async def _run_mcp_chat(self, query, context, session_id, request_contents, request_warnings):
+        from bot.mcp.hub import mcp_hub
+
+        mcp_context = {"session_id": session_id}
+        async with mcp_hub.session(session_id=session_id, context=mcp_context) as mcp:
+            if not mcp.has_tools:
+                logger.info(f"[{self.Model_ID}] 本轮次无可用 MCP 工具，回退到常规流程")
+                return None
+
+            user_chat = self._get_user_chat(session_id, self.model)
+            mcp_tools = mcp_tool_definitions_to_gemini(mcp.tool_definitions)
+
+            is_printing = tool_state.get_print_state(session_id)
+            is_breakdown = tool_state.get_breakdown_state(session_id)
+            is_searching = tool_state.get_search_state(session_id)
+
+            # 聚合所有工具：MCP 工具 + 本地兜底工具 (剧本拆解等)
+            combined_tools = list(mcp_tools)
+            if self.function_declarations not in combined_tools:
+                combined_tools.append(self.function_declarations)
+            if is_searching and self.google_search_tool not in combined_tools:
+                combined_tools.append(self.google_search_tool)
+
+            system_instruction = self.system_prompt or ""
+            if mcp.instructions:
+                system_instruction = (system_instruction + "\n\n" + mcp.instructions).strip()
+
+            tool_config = {'function_calling_config': {'mode': 'AUTO'}}
+            if is_printing:
+                tool_config = {
+                    'function_calling_config': {
+                        'mode': 'ANY',
+                        'allowedFunctionNames': ['screenplay_formatter']
+                    }
+                }
+                tool_state.toggle_printing(session_id)
+            elif is_breakdown:
+                tool_config = {
+                    'function_calling_config': {
+                        'mode': 'ANY',
+                        'allowedFunctionNames': ["screenplay_scenes_breakdown", "screenplay_assets_breakdown"]
+                    }
+                }
+                tool_state.toggle_breakdowning(session_id)
+
+            config = GenerateContentConfig(
+                system_instruction=system_instruction,
+                safety_settings=self.safety_settings,
+                tools=combined_tools,
+                tool_config=tool_config,
+                response_modalities=['TEXT'],
+                **self.generation_config
+            )
+
+            response = user_chat.send_message(request_contents, config=config)
+            if response.text is None and not getattr(response, "function_calls", None):
+                logger.warning(f"[{self.Model_ID}] MCP 响应内容为空")
+                return Reply(ReplyType.ERROR, f"[{self.Model_ID}] Response Text is None")
+
+            response, function_response = await self._async_function_call_polling_loop(
+                session_id, response, user_chat, mcp
+            )
+
+            # 0. 检查是否有捕获的视频 (如 Kling MCP 异步生成)
+            captured_video = await mcp.finalize()
+            if captured_video and captured_video.get("video_url"):
+                video_url = captured_video["video_url"]
+                duration = captured_video.get("duration", 5)
+                from bot.mcp.hub import MCPHub
+                raw_text = response.text or ""
+                clean_reply_text = MCPHub.strip_media_links(raw_text)
+                return Reply(ReplyType.VIDEO_URL, (duration, video_url, clean_reply_text))
+
+            # 1. 检查 MCP 捕获的文件产物
+            mcp_file_response = mcp.state.get("function_response")
+            if mcp_file_response:
+                reply_text = ("\n".join(request_warnings) + "\n\n" if request_warnings else "") + (response.text or "剧本排版完成。")
+                return Reply(ReplyType.FILE, {
+                    'reply_text': reply_text,
+                    'function_response': mcp_file_response
+                })
+
+            # 2. 检查本地函数文件结果
+            if function_response:
+                reply_text = ("\n".join(request_warnings) + "\n\n" if request_warnings else "") + (response.text or "")
+                return Reply(ReplyType.FILE, {
+                    'reply_text': reply_text,
+                    'function_response': function_response[0].function_response.response
+                })
+
+            # 3. 搜索 grounding 检查
+            if is_searching and getattr(response, "candidates", None):
+                grounding_metadata = getattr(response.candidates[0], "grounding_metadata", None)
+                if grounding_metadata and grounding_metadata.grounding_chunks:
+                    return Reply(ReplyType.IMAGE_URL, response)
+
+            reply_text = ("\n".join(request_warnings) + "\n\n" if request_warnings else "") + (response.text or "")
+            self.sessions.session_reply(reply_text, session_id)
+            return Reply(ReplyType.TEXT, reply_text)
+
+    async def _async_function_call_polling_loop(self, session_id, response, user_chat, mcp_session=None):
+        function_calling = True
+        function_response = []
+        max_rounds = mcp_session.max_tool_rounds if mcp_session else 15
+        round_idx = 0
+
+        while function_calling and round_idx < max_rounds:
+            round_idx += 1
+            if hasattr(response, 'function_calls'):
+                function_calls = response.function_calls if response.function_calls is not None else []
+            else:
+                parts = getattr(response, 'parts', None)
+                function_calls = parts if parts and getattr(parts[0], 'function_call', None) and getattr(parts[0].function_call, 'args', None) is not None else []
+
+            if not function_calls:
+                break
+
+            function_response_parts = []
+            for part in function_calls:
+                function_call_reply = self.function_call_reply(part)
+                fn_name = function_call_reply.get('functionCall', {}).get('name')
+                fn_args = function_call_reply.get('functionCall', {}).get('args') or {}
+
+                if mcp_session and fn_name in mcp_session.tool_map:
+                    logger.info(f"[{self.Model_ID}] 优先路由到 MCP 服务调用: {fn_name}")
+                    serialized_res, is_error = await mcp_session.call_tool(fn_name, fn_args)
+                    resp_obj = Part.from_function_response(
+                        name=fn_name,
+                        response={"result": serialized_res}
+                    )
+                    function_response_parts.append(resp_obj)
+                else:
+                    function_call = self.function_call_dicts.get(fn_name)
+                    if function_call:
+                        local_resp_parts = function_call(session_id, fn_name, **fn_args)
+                        function_response_parts.extend(local_resp_parts)
+                        function_response = local_resp_parts
+                    else:
+                        logger.warning(f"[{self.Model_ID}] 未注册的函数: {fn_name}")
+
+            if function_response_parts:
+                response = user_chat.send_message(function_response_parts)
+                continue
+            function_calling = False
+
         return response, function_response
 
     def _file_cache(self, context):

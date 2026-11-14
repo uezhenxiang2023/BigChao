@@ -375,7 +375,7 @@ def add_cover(
         
 def add_scene_setting(doc, content):
         scene_id = content['scene_heading']['scene_id']
-        env = content['scene_heading']['enviroment']
+        env = content['scene_heading'].get('enviroment') or content['scene_heading'].get('environment', '')
         location = content['scene_heading']['location']
         daynight = content['scene_heading']['daynight']
         content = str(scene_id) + ' ' + env + ' ' + location + ' - ' + daynight
