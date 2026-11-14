@@ -94,10 +94,13 @@ class ClaudeAIBot(Bot):
             # 判断联网搜索状态
             is_searching = tool_state.get_search_state(session_id)
 
+            from bot.mcp.hub import mcp_hub
             has_mcp = (
                 conf().get("blender_mcp_enabled", False)
                 or conf().get("kling_mcp_enabled", False)
                 or conf().get("unreal_mcp_enabled", False)
+                or conf().get("script_breakdown_mcp_enabled", False)
+                or mcp_hub.has_any_enabled(session_id)
             )
 
             create_kwargs = dict(

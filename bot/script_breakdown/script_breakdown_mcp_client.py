@@ -20,11 +20,12 @@ class ScriptBreakdownMCPConnection:
 
     def tool_definitions(self) -> List[Dict[str, Any]]:
         """返回统一的标准工具定义列表，供各大模型格式化"""
+        from bot.gemini.gemini_mcp import dereference_schema
         return [
             {
                 "name": tool.name,
                 "description": tool.description or "",
-                "input_schema": getattr(tool, "input_schema", getattr(tool, "inputSchema", {})),
+                "input_schema": dereference_schema(getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))),
             }
             for tool in self.tools
         ]

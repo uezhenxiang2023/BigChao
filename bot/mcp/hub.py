@@ -165,6 +165,16 @@ class MCPHub:
                 return p
         return None
 
+    def has_any_enabled(self, session_id: Optional[str] = None) -> bool:
+        """检查是否有任何 Provider 在当前全局配置或用户会话下处于启用状态"""
+        for p in self.providers:
+            try:
+                if p.enabled():
+                    return True
+            except Exception:
+                pass
+        return False
+
     @contextlib.asynccontextmanager
     async def session(
         self,

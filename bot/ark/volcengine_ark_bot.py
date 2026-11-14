@@ -132,15 +132,19 @@ class VolcengineArkBot(Bot):
             if self.use_responses_api and self.model not in const.DOUBAO_BOT_LIST:
                 pending_video_url = session.pending_video_url
                 response_query = self._add_pending_video_input(query, pending_video_url)
+                from bot.mcp.hub import mcp_hub
                 has_mcp = (
                     conf().get("blender_mcp_enabled", False)
                     or conf().get("kling_mcp_enabled", False)
                     or conf().get("unreal_mcp_enabled", False)
+                    or conf().get("script_breakdown_mcp_enabled", False)
+                    or mcp_hub.has_any_enabled(session_id)
                 )
 
                 video_info = None
+                file_info = None
                 if has_mcp:
-                    response, video_info = asyncio.run(
+                    response, video_info, file_info = asyncio.run(
                         self._create_response_with_mcp(session, response_query)
                     )
                 else:
@@ -184,6 +188,14 @@ class VolcengineArkBot(Bot):
                             video_info["video_url"],
                             clean_reply,
                         ),
+                    )
+                if file_info:
+                    return Reply(
+                        ReplyType.FILE,
+                        {
+                            "reply_text": reply_text,
+                            "function_response": file_info,
+                        },
                     )
             return Reply(ReplyType.TEXT, reply_text)
 
@@ -258,7 +270,7 @@ class VolcengineArkBot(Bot):
         async with mcp_hub.session(session_id=context["session_id"], context=context) as mcp:
             if not mcp.has_tools:
                 logger.info(f"[{self.Model_ID}] 无可用 MCP 工具，回退为普通会话")
-                return self._create_response(session, current_query), None
+                return self._create_response(session, current_query), None, None
 
             tools = [
                 {
@@ -288,7 +300,8 @@ class VolcengineArkBot(Bot):
 
                 if not tool_calls:
                     captured_video = await mcp.finalize()
-                    return response, captured_video
+                    mcp_file_response = mcp.state.get("function_response")
+                    return response, captured_video, mcp_file_response
 
                 response_id = self._get_attr_or_key(response, "id")
                 if not response_id:
