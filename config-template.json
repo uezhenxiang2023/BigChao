@@ -1,7 +1,7 @@
 {
   "channel_type": "wx",
   "model": "",
-  "open_ai_api_key": "YOUR API KEY",
+  "open_ai_api_key": "",
   "text_to_image": "dall-e-2",
   "image_create_quality": "low",
   "voice_to_text": "openai",
@@ -39,8 +39,10 @@
   "linkai_api_key": "",
   "linkai_app_code": "",
   "kling_mcp_enabled": false,
-  "blender_mcp_enabled": false,
+  "blender_mcp_cwd": "",
+  "blender_mcp_max_tool_rounds": 8,
   "unreal_mcp_enabled": false,
+  "unreal_mcp_url": "http://127.0.0.1:8000/mcp",
   "script_breakdown_mcp_enabled": false,
   "script_breakdown_mcp_dir": "",
   "script_breakdown_output_dir": ""
