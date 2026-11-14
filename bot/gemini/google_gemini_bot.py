@@ -882,7 +882,7 @@ class GoogleGeminiBot(Bot):
                 self._run_mcp_chat(query, context, session_id, request_contents, request_warnings)
             )
         except Exception as e:
-            logger.warning(f"[{self.Model_ID}] MCP chat 异常，将回退为普通流程: {e}")
+            logger.warning(f"[{self.Model_ID}] MCP chat 异常，将回退为普通流程: {e}", exc_info=True)
             return None
 
     async def _run_mcp_chat(self, query, context, session_id, request_contents, request_warnings):
@@ -901,10 +901,16 @@ class GoogleGeminiBot(Bot):
             is_breakdown = tool_state.get_breakdown_state(session_id)
             is_searching = tool_state.get_search_state(session_id)
 
-            # 聚合所有工具：MCP 工具 + 本地兜底工具 (剧本拆解等)
+            # 聚合所有工具：MCP 工具 + 本地兜底工具 (剧本拆解等)，按函数名去重防止 Gemini 报 Duplicate function declaration
             combined_tools = list(mcp_tools)
-            if self.function_declarations not in combined_tools:
-                combined_tools.append(self.function_declarations)
+            mcp_tool_names = set(mcp.tool_map.keys())
+            remaining_local_decls = [
+                decl for decl in getattr(self.function_declarations, "function_declarations", [])
+                if getattr(decl, "name", None) not in mcp_tool_names
+            ]
+            if remaining_local_decls:
+                combined_tools.append(Tool(function_declarations=remaining_local_decls))
+
             if is_searching and self.google_search_tool not in combined_tools:
                 combined_tools.append(self.google_search_tool)
 
