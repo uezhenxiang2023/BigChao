@@ -401,9 +401,18 @@ class GoogleGeminiBot(Bot):
         :param session_id: 用户会话ID
         :return: 构建好的请求内容列表
         """
-        # 如果是打印状态，修改查询内容
-        if tool_state.get_print_state(session_id):
-            query = f"大超子，帮忙给这个本子排版，编剧的名字是{query}"
+        file_cache = memory.USER_FILE_CACHE.get(session_id)
+        has_script_file = False
+        if file_cache:
+            files = file_cache.get("files") if isinstance(file_cache, dict) else None
+            if files:
+                has_script_file = True
+            elif file_cache.get("path") or file_cache.get("data"):
+                has_script_file = True
+
+        # 仅当处于排版状态且确实有上传的剧本文件时，才将用户输入改写为编剧排版指令
+        if tool_state.get_print_state(session_id) and has_script_file:
+            query = f"帮忙给这个本子排版，编剧的名字是{query}"
         
         # 创建文本Part对象并添加到列表
         text = Part.from_text(text=query)
@@ -494,6 +503,26 @@ class GoogleGeminiBot(Bot):
                     logger.warning(f"[{self.Model_ID}] Unsupported Gemini model")
                     return Reply(ReplyType.ERROR, f"[{self.Model_ID}] Unsupported Gemini model")
 
+                # 剧本排版状态：如果用户明确发送取消或退出指令，则退出排版模式
+                if tool_state.get_print_state(session_id):
+                    clean_query = query.strip()
+                    if clean_query in ["退出", "取消", "退出排版", "取消排版", "#print"]:
+                        tool_state.toggle_printing(session_id)
+                        conf()["script_breakdown_mcp_enabled"] = False
+                        logger.info(f"[{self.Model_ID}] 用户退出剧本排版模式, requester={session_id}")
+                        return Reply(ReplyType.INFO, "已退出剧本排版模式。")
+
+                file_cache = memory.USER_FILE_CACHE.get(session_id)
+                has_script_file = False
+                if file_cache:
+                    files = file_cache.get("files") if isinstance(file_cache, dict) else None
+                    if files:
+                        has_script_file = True
+                    elif file_cache.get("path") or file_cache.get("data"):
+                        has_script_file = True
+                if context is not None:
+                    context["has_script_file"] = has_script_file
+
                 session = self.sessions.session_query(query, session_id)
                 user_chat = self._get_user_chat(session_id, self.model)
                 resquest_contents, request_warnings = self._build_request_contents(query, session_id)
@@ -508,7 +537,7 @@ class GoogleGeminiBot(Bot):
                     if mcp_reply is not None:
                         return mcp_reply
 
-                if tool_state.get_print_state(session_id):
+                if tool_state.get_print_state(session_id) and context.get("has_script_file", False):
                     response = user_chat.send_message(resquest_contents, config=self.print_config)
                     tool_state.toggle_printing(session_id)
                 elif tool_state.get_breakdown_state(session_id):
@@ -712,7 +741,7 @@ class GoogleGeminiBot(Bot):
             if mcp.instructions:
                 system_instruction = (system_instruction + "\n\n" + mcp.instructions).strip()
 
-            is_printing = tool_state.get_print_state(session_id)
+            is_printing = tool_state.get_print_state(session_id) and bool((context or {}).get("has_script_file", False))
             is_breakdown = tool_state.get_breakdown_state(session_id)
             is_searching = tool_state.get_search_state(session_id)
 
@@ -720,7 +749,7 @@ class GoogleGeminiBot(Bot):
                 formatter_tools = [t for t in interactions_tools if t.get("name") == "screenplay_formatter"]
                 if formatter_tools:
                     interactions_tools = formatter_tools
-                system_instruction = (system_instruction + "\n\n用户已在菜单中开启【剧本排版】功能，请直接调用 `screenplay_formatter` 工具对提供的剧本内容进行工业级标准化排版。").strip()
+                system_instruction = (system_instruction + "\n\n用户已在菜单中开启【剧本排版】功能且已提供剧本文件，请直接调用 `screenplay_formatter` 工具对提供的剧本内容进行工业级标准化排版。").strip()
                 tool_state.toggle_printing(session_id)
             elif is_breakdown:
                 breakdown_tools = [t for t in interactions_tools if t.get("name") in ("screenplay_scenes_breakdown", "screenplay_assets_breakdown")]
@@ -897,7 +926,7 @@ class GoogleGeminiBot(Bot):
             user_chat = self._get_user_chat(session_id, self.model)
             mcp_tools = mcp_tool_definitions_to_gemini(mcp.tool_definitions)
 
-            is_printing = tool_state.get_print_state(session_id)
+            is_printing = tool_state.get_print_state(session_id) and bool((context or {}).get("has_script_file", False))
             is_breakdown = tool_state.get_breakdown_state(session_id)
             is_searching = tool_state.get_search_state(session_id)
 

@@ -418,9 +418,9 @@ class Godcmd(Plugin):
                     is_ready = ScriptBreakdownMCPClient().is_ready()
                     if is_printing:
                         if is_ready:
-                            text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n大超子将调用 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
+                            text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n将调用 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
                         else:
-                            text = "[INFO]\n剧本排版功能已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n大超子将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
+                            text = "[INFO]\n剧本排版功能已开启！请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
                     else:
                         text = "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已关闭，可以在消息框输入 #print 或点击输入框上方的‘剧本排版’菜单随时开启。"
                     ok, result = True, text

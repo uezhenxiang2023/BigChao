@@ -401,13 +401,13 @@ class FeiShuChanel(ChatChannel):
                 text = (
                     "[INFO]\n剧本排版 (Script Breakdown) FastMCP 服务已开启！\n"
                     "请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n"
-                    "大超子将调用本地 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
+                    "将调用本地 FastMCP 服务，按照好莱坞工业标准进行标准化排版并输出 .docx 文档。"
                 )
             else:
                 text = (
                     "[INFO]\n剧本排版功能已开启！\n"
                     "请先在输入框中点击“+”号上传 PDF 格式的剧本，然后在对话框中输入编剧姓名。\n"
-                    "大超子将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
+                    "将按照好莱坞编剧工会的标准格式进行排版并输出 .docx 文档。"
                 )
             logger.info(f'[Lark] enable Script Breakdown MCP, is_ready={is_ready}, requester={toUserName}')
         else:
@@ -592,7 +592,7 @@ class FeiShuChanel(ChatChannel):
     # 统一的发送函数，每个Channel自行实现，根据reply的type字段发送不同类型的消息
     def send(self, reply: Reply, context: Context):
         receiver = context["receiver"]
-        error_response = "网络有点小繁忙，请过几秒再试一试，给您带来不便，大超子深表歉意"
+        error_response = "网络有点小繁忙，请过几秒再试一试，给您带来不便，深表歉意"
         if reply.type == ReplyType.TEXT:
             try:
                 self.send_text(reply.content, toUserName=receiver)

@@ -279,6 +279,20 @@ def screenplay_formatter(
         screenwriter: str = None,
         paragraphs_metadata: list = []
     ):
+    if not paragraphs_metadata:
+        logger.warning(f"[script_breakdown] paragraphs_metadata is empty, skip generating docx, session_id={session_id}")
+        api_response = {
+            'error': '剧本段落列表为空，未收到剧本内容，无法生成排版文档。'
+        }
+        function_response_obj = Part.from_function_response(
+            name=fn_name,
+            response=api_response,
+        )
+        function_response_text = Part.from_text(
+            text="未接收到有效的剧本段落内容，未生成排版文件。请先上传剧本文件。"
+        )
+        return [function_response_obj, function_response_text]
+
     # 创建新文文档
     doc = Document()
     # 页面设置为A4尺寸
