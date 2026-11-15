@@ -79,8 +79,30 @@ class ClaudeAIBot(Bot):
             return Reply(ReplyType.ERROR, "请再问我一次吧")
 
         try:
+            # 剧本排版状态：如果用户明确发送取消或退出指令，则退出排版模式
+            if tool_state.get_print_state(session_id):
+                clean_query = query.strip()
+                if clean_query in ["退出", "取消", "退出排版", "取消排版", "#print"]:
+                    tool_state.toggle_printing(session_id)
+                    conf()["script_breakdown_mcp_enabled"] = False
+                    logger.info(f"[{self.Model_ID}] 用户退出剧本排版模式, requester={session_id}")
+                    return Reply(ReplyType.INFO, "已退出剧本排版模式。")
+
+            file_cache = memory.USER_FILE_CACHE.get(session_id)
+            has_script_file = False
+            if file_cache:
+                files = file_cache.get("files") if isinstance(file_cache, dict) else None
+                if files:
+                    has_script_file = True
+                elif file_cache.get("path") or file_cache.get("data"):
+                    has_script_file = True
+            if context is not None:
+                context["has_script_file"] = has_script_file
+
+            is_printing = tool_state.get_print_state(session_id) and has_script_file
+
             # 先构建多模态 content 块（含媒体+文本）
-            current_content = self._build_current_content(query, session_id)
+            current_content = self._build_current_content(query, session_id, has_script_file=has_script_file)
             logger.info(f"[{self.Model_ID}] query={query}")
 
             # 将多模态 content 块写入 session，而不是纯字符串 query
@@ -103,16 +125,29 @@ class ClaudeAIBot(Bot):
                 or mcp_hub.has_any_enabled(session_id)
             )
 
+            current_system = self.system_prompt or ""
+            if is_printing:
+                current_system = (
+                    current_system + "\n\n用户已在菜单中开启【剧本排版】功能且已提供剧本文件，"
+                    "请调用 `screenplay_formatter` 工具对剧本内容进行工业级标准化排版。\n"
+                    "重要规则：\n"
+                    "1. 对于中短篇剧本（例如20场以内），请一次性将全部场次的段落完整整理并在单次调用中全部提交（设置 append=False, final=True），无需分批。\n"
+                    "2. 若剧本篇幅极长必须分批时：第一批设置 append=False, final=False；后续批次必须设置 append=True；最后一批设置 final=True。"
+                    "每次调用都必须传入相同的 screenplay_title、screenwriter 以及当前批次的完整 paragraphs_metadata 列表，严禁传入空参数！"
+                ).strip()
+
+            max_tokens = int(conf().get("claude_max_tokens") or (8192 if has_mcp else 1000))
+
             create_kwargs = dict(
                 model=self.model,
-                max_tokens=4096 if has_mcp else 1000,
+                max_tokens=max_tokens,
                 temperature=0.0,
-                system=self.system_prompt or "",
+                system=current_system,
                 messages=claude_message
             )
 
             if has_mcp:
-                return self._chat_with_mcp(create_kwargs, session_id, current_content)
+                return self._chat_with_mcp(create_kwargs, session_id, current_content, is_printing=is_printing)
             
             if is_searching:
                 create_kwargs["tools"] = [
@@ -199,11 +234,11 @@ class ClaudeAIBot(Bot):
             curr = curr.exceptions[0]
         return curr
 
-    def _chat_with_mcp(self, create_kwargs, session_id, current_content=None):
+    def _chat_with_mcp(self, create_kwargs, session_id, current_content=None, is_printing=False):
         """通过 MCPHub 在一条 Claude 消息内执行完整的 MCP 工具调用循环。"""
         try:
-            reply_content, output_tokens, video_info = asyncio.run(
-                self._run_mcp_chat(create_kwargs, session_id, current_content)
+            reply_content, output_tokens, video_info, file_response = asyncio.run(
+                self._run_mcp_chat(create_kwargs, session_id, current_content, is_printing=is_printing)
             )
             self.sessions.session_reply(reply_content, session_id, output_tokens)
             logger.info(
@@ -211,12 +246,22 @@ class ClaudeAIBot(Bot):
                 f"session_id={session_id}, tokens={output_tokens}"
             )
 
+            if is_printing:
+                tool_state.toggle_printing(session_id)
+
             if video_info and video_info.get("video_url"):
                 video_url = video_info["video_url"]
                 duration = video_info.get("duration", 5)
                 from bot.mcp.hub import MCPHub
                 clean_reply_content = MCPHub.strip_media_links(reply_content)
                 return Reply(ReplyType.VIDEO_URL, (duration, video_url, clean_reply_content))
+
+            if file_response:
+                file_reply_text = reply_content if reply_content and reply_content != "操作已完成。" else "剧本排版已完成，请查收输出的文档。"
+                return Reply(ReplyType.FILE, {
+                    'reply_text': file_reply_text,
+                    'function_response': file_response
+                })
 
             return Reply(ReplyType.TEXT, reply_content)
         except Exception as e:
@@ -227,8 +272,8 @@ class ClaudeAIBot(Bot):
             logger.exception(f"[{self.Model_ID}] MCP request failed: {real_err}")
             return Reply(ReplyType.ERROR, f"[{self.Model_ID}] MCP 调用失败：{real_err}")
 
-    async def _run_mcp_chat(self, create_kwargs, session_id, current_content=None):
-        """通过 MCPHub 聚合所有启用的 MCP 工具（Blender, Kling, Unreal），由 Claude 调度执行。"""
+    async def _run_mcp_chat(self, create_kwargs, session_id, current_content=None, is_printing=False):
+        """通过 MCPHub 聚合所有启用的 MCP 工具（Blender, Kling, Unreal, Script_Breakdown），由 Claude 调度执行。"""
         from bot.mcp.hub import mcp_hub
 
         messages = list(create_kwargs["messages"])
@@ -239,7 +284,7 @@ class ClaudeAIBot(Bot):
                 logger.info(f"[{self.Model_ID}] 无可用 MCP 工具，回退为普通会话")
                 response = self._create_claude_message(create_kwargs, current_content)
                 reply_content = "".join([b.text for b in response.content if hasattr(b, "text")])
-                return reply_content, getattr(getattr(response, "usage", None), "output_tokens", 100), None
+                return reply_content, getattr(getattr(response, "usage", None), "output_tokens", 100), None, None
 
             # 追加 Hub 聚合 instructions 到系统提示词
             if mcp.instructions:
@@ -250,10 +295,11 @@ class ClaudeAIBot(Bot):
             max_rounds = mcp.max_tool_rounds
 
             captured_video = None
+
             for round_idx in range(max_rounds):
-                response = self.client.messages.create(
-                    **dict(create_kwargs, messages=messages, tools=tool_definitions)
-                )
+                call_kwargs = dict(create_kwargs, messages=messages, tools=tool_definitions)
+
+                response = self.client.messages.create(**call_kwargs)
                 response_blocks = self._serialize_anthropic_blocks(response.content)
                 tool_uses = [
                     block for block in response_blocks
@@ -264,7 +310,8 @@ class ClaudeAIBot(Bot):
                     captured_video = await mcp.finalize()
                     final_text = self._extract_claude_text(response_blocks)
                     output_tokens = response.usage.output_tokens
-                    return final_text, output_tokens, captured_video
+                    file_response = mcp.state.get("function_response")
+                    return final_text, output_tokens, captured_video, file_response
 
                 messages.append({"role": "assistant", "content": response_blocks})
                 tool_results = []
@@ -366,7 +413,7 @@ class ClaudeAIBot(Bot):
         )
         return text or "操作已完成。"
         
-    def _build_current_content(self, query: str, session_id: str) -> list:
+    def _build_current_content(self, query: str, session_id: str, has_script_file: bool = False) -> list:
         """
         构建当前轮次的多模态 content 块列表。
         媒体块在前，文本在后。消费并清除缓存。
@@ -477,6 +524,10 @@ class ClaudeAIBot(Bot):
                     logger.warning(f"[{self.Model_ID}] unsupported mime_type: {mime_type}")
 
             memory.USER_FILE_CACHE.pop(session_id)
+
+        # 仅当处于排版状态且确实有上传的剧本文件时，才包装查询内容为编剧排版指令
+        if tool_state.get_print_state(session_id) and has_script_file:
+            query = f"帮忙给这个本子排版，编剧的名字是{query}"
 
         # 文本块追加在末尾
         current_content.append({

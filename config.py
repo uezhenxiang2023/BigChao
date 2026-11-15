@@ -82,6 +82,7 @@ available_setting = {
     "anthropic_uuid": "",
     "anthropic_timeout": 300,  # Claude API 总请求超时时间（秒）
     "anthropic_connect_timeout": 15,  # Claude API 建立连接/握手超时时间（秒）
+    "claude_max_tokens": 8192,  # Claude 模型单次回复/工具调用最大生成输出 Token 数
     # Blender MCP（通过 Claude Messages API 调用本地 stdio Server）
     "blender_mcp_enabled": False,
     "blender_mcp_command": "",
