@@ -36,7 +36,19 @@ GPT54_LIST = [GPT54, GPT54_MINI, GPT54_NANO]
 GPT_IMAGE_15 = "gpt-image-1.5"
 GPT_IMAGE_2 = "gpt-image-2"
 GPT_IMAGE_2_PLUS = "gpt-image-2-plus"
-GPT_IMAGE_LIST = [GPT_IMAGE_15, GPT_IMAGE_2, GPT_IMAGE_2_PLUS]
+GPT_IMAGE_25_FLARE = "gpt-image-2.5-flare-2026-09-08"
+GPT_IMAGE_25_SUNBURST = "gpt-image-2.5-sunburst-2026-09-08"
+GPT_IMAGE_26_FLARE = "gpt-image-2.6-flare"
+GPT_IMAGE_26_SUNBURST = "gpt-image-2.6-sunburst"
+GPT_IMAGE_LIST = [
+    GPT_IMAGE_15, 
+    GPT_IMAGE_2, 
+    GPT_IMAGE_2_PLUS, 
+    GPT_IMAGE_25_FLARE, 
+    GPT_IMAGE_25_SUNBURST, 
+    GPT_IMAGE_26_FLARE, 
+    GPT_IMAGE_26_SUNBURST
+]
 
 WHISPER_1 = "whisper-1"
 TTS_1 = "tts-1"
